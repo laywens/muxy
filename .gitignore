@@ -28,3 +28,10 @@ appcast*.xml
 .opencode/
 .pi/
 .context/
+/internal
+CLAUDE.MD
+GEMINI.MD
+AGENTS.MD
+CODEX.MD
+repomix*
+.envrc
