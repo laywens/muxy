@@ -24,3 +24,10 @@ appcast*.xml
 .plans/
 .muxy/
 /muxy-markdown-remote-image-urlcache
+/internal
+CLAUDE.MD
+GEMINI.MD
+AGENTS.MD
+CODEX.MD
+repomix*
+.envrc
