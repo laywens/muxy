@@ -188,7 +188,8 @@ enum WorkspaceRestorer {
         from snapshots: [WorkspaceSnapshot],
         projects: [Project],
         worktrees: [UUID: [Worktree]],
-        sessionsByPaneID: [UUID: TerminalSessionSnapshot] = [:]
+        sessionsByPaneID: [UUID: TerminalSessionSnapshot] = [:],
+        branchService: RepoBranchService = .shared
     ) -> [RestoredWorkspace] {
         let projectByID = Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0) })
         var results: [RestoredWorkspace] = []
@@ -196,7 +197,11 @@ enum WorkspaceRestorer {
             guard projectByID[snapshot.projectID] != nil else { continue }
             let worktreeList = worktrees[snapshot.projectID] ?? []
             guard let targetWorktree = resolveWorktree(for: snapshot, in: worktreeList) else { continue }
-            let root = restoreSplitNode(from: snapshot.root, sessionsByPaneID: sessionsByPaneID)
+            let root = restoreSplitNode(
+                from: snapshot.root,
+                sessionsByPaneID: sessionsByPaneID,
+                branchService: branchService
+            )
             let areas = root.allAreas()
             guard !areas.isEmpty else { continue }
             let focusedID: UUID = if let areaID = snapshot.focusedAreaID, root.findArea(id: areaID) != nil {
@@ -247,14 +252,27 @@ enum WorkspaceRestorer {
 
     private static func restoreSplitNode(
         from snapshot: SplitNodeSnapshot,
-        sessionsByPaneID: [UUID: TerminalSessionSnapshot]
+        sessionsByPaneID: [UUID: TerminalSessionSnapshot],
+        branchService: RepoBranchService
     ) -> SplitNode {
         switch snapshot {
         case let .tabArea(areaSnapshot):
-            return .tabArea(TabArea(restoring: areaSnapshot, sessionsByPaneID: sessionsByPaneID))
+            return .tabArea(TabArea(
+                restoring: areaSnapshot,
+                sessionsByPaneID: sessionsByPaneID,
+                branchService: branchService
+            ))
         case let .split(branchSnapshot):
-            let first = restoreSplitNode(from: branchSnapshot.first, sessionsByPaneID: sessionsByPaneID)
-            let second = restoreSplitNode(from: branchSnapshot.second, sessionsByPaneID: sessionsByPaneID)
+            let first = restoreSplitNode(
+                from: branchSnapshot.first,
+                sessionsByPaneID: sessionsByPaneID,
+                branchService: branchService
+            )
+            let second = restoreSplitNode(
+                from: branchSnapshot.second,
+                sessionsByPaneID: sessionsByPaneID,
+                branchService: branchService
+            )
             let direction: SplitDirection = switch branchSnapshot.direction {
             case .horizontal: .horizontal
             case .vertical: .vertical

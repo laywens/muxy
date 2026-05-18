@@ -131,7 +131,11 @@ final class TerminalTab: Identifiable {
         content = .extensionWebView(extensionState)
     }
 
-    init(restoring snapshot: TerminalTabSnapshot, restoredSession: TerminalSessionSnapshot? = nil) {
+    init(
+        restoring snapshot: TerminalTabSnapshot,
+        restoredSession: TerminalSessionSnapshot? = nil,
+        branchService: RepoBranchService = .shared
+    ) {
         id = snapshot.id
         customTitle = snapshot.customTitle
         colorID = snapshot.colorID
@@ -147,7 +151,8 @@ final class TerminalTab: Identifiable {
                 projectPath: snapshot.projectPath,
                 title: snapshot.paneTitle,
                 initialWorkingDirectory: restoredWorkingDirectory,
-                restoredSession: restoredSession
+                restoredSession: restoredSession,
+                branchService: branchService
             ))
         case .vcs:
             content = .vcs(VCSStateStore.shared.state(for: snapshot.projectPath))
@@ -159,10 +164,18 @@ final class TerminalTab: Identifiable {
                     defaultHTMLViewMode: EditorSettings.shared.htmlDefaultViewMode
                 ))
             } else {
-                content = .terminal(TerminalPaneState(projectPath: snapshot.projectPath, title: snapshot.paneTitle))
+                content = .terminal(TerminalPaneState(
+                    projectPath: snapshot.projectPath,
+                    title: snapshot.paneTitle,
+                    branchService: branchService
+                ))
             }
         case .diffViewer:
-            content = .terminal(TerminalPaneState(projectPath: snapshot.projectPath, title: snapshot.paneTitle))
+            content = .terminal(TerminalPaneState(
+                projectPath: snapshot.projectPath,
+                title: snapshot.paneTitle,
+                branchService: branchService
+            ))
         case .imageViewer:
             if let filePath = snapshot.filePath {
                 if EditorTabState.usesHTMLPreview(filePath: filePath) {
@@ -171,7 +184,11 @@ final class TerminalTab: Identifiable {
                     content = .imageViewer(ImageViewerTabState(projectPath: snapshot.projectPath, filePath: filePath))
                 }
             } else {
-                content = .terminal(TerminalPaneState(projectPath: snapshot.projectPath, title: snapshot.paneTitle))
+                content = .terminal(TerminalPaneState(
+                    projectPath: snapshot.projectPath,
+                    title: snapshot.paneTitle,
+                    branchService: branchService
+                ))
             }
         case .extensionWebView:
             if let extensionID = snapshot.extensionID,

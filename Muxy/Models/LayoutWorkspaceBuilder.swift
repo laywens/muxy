@@ -7,19 +7,29 @@ enum LayoutWorkspaceBuilder {
         let focusedAreaID: UUID
     }
 
-    static func build(config: LayoutConfig, projectPath: String) -> Result? {
-        guard let node = buildNode(from: config.root, projectPath: projectPath) else {
+    static func build(
+        config: LayoutConfig,
+        projectPath: String,
+        branchService: RepoBranchService = .shared
+    ) -> Result? {
+        guard let node = buildNode(from: config.root, projectPath: projectPath, branchService: branchService) else {
             return nil
         }
         return Result(root: node, focusedAreaID: firstAreaID(in: node))
     }
 
-    private static func buildNode(from pane: LayoutConfig.Pane, projectPath: String) -> SplitNode? {
+    private static func buildNode(
+        from pane: LayoutConfig.Pane,
+        projectPath: String,
+        branchService: RepoBranchService
+    ) -> SplitNode? {
         switch pane {
         case let .leaf(tabs):
-            return makeArea(tabs: tabs, projectPath: projectPath).map { .tabArea($0) }
+            return makeArea(tabs: tabs, projectPath: projectPath, branchService: branchService).map { .tabArea($0) }
         case let .branch(layout, panes):
-            let children = panes.compactMap { buildNode(from: $0, projectPath: projectPath) }
+            let children = panes.compactMap {
+                buildNode(from: $0, projectPath: projectPath, branchService: branchService)
+            }
             guard let first = children.first else { return nil }
             if children.count == 1 { return first }
             let direction: SplitDirection = layout == .horizontal ? .horizontal : .vertical
@@ -29,10 +39,14 @@ enum LayoutWorkspaceBuilder {
         }
     }
 
-    private static func makeArea(tabs: [LayoutConfig.Tab], projectPath: String) -> TabArea? {
-        let terminalTabs = tabs.map { makeTab(from: $0, projectPath: projectPath) }
+    private static func makeArea(
+        tabs: [LayoutConfig.Tab],
+        projectPath: String,
+        branchService: RepoBranchService
+    ) -> TabArea? {
+        let terminalTabs = tabs.map { makeTab(from: $0, projectPath: projectPath, branchService: branchService) }
         guard let firstTab = terminalTabs.first else { return nil }
-        let area = TabArea(projectPath: projectPath, existingTab: firstTab)
+        let area = TabArea(projectPath: projectPath, existingTab: firstTab, branchService: branchService)
         for tab in terminalTabs.dropFirst() {
             area.insertExistingTab(tab)
         }
@@ -40,7 +54,11 @@ enum LayoutWorkspaceBuilder {
         return area
     }
 
-    private static func makeTab(from tab: LayoutConfig.Tab, projectPath: String) -> TerminalTab {
+    private static func makeTab(
+        from tab: LayoutConfig.Tab,
+        projectPath: String,
+        branchService: RepoBranchService
+    ) -> TerminalTab {
         let trimmedCommand = tab.command?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedCommand = (trimmedCommand?.isEmpty ?? true) ? nil : trimmedCommand
         let trimmedName = tab.name?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -55,7 +73,8 @@ enum LayoutWorkspaceBuilder {
             projectPath: projectPath,
             title: resolvedTitle,
             startupCommand: resolvedCommand,
-            startupCommandInteractive: true
+            startupCommandInteractive: true,
+            branchService: branchService
         )
         return TerminalTab(pane: pane)
     }

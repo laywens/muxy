@@ -74,6 +74,7 @@ final class AppState {
     private let terminalViews: any TerminalViewRemoving
     private let workspacePersistence: any WorkspacePersisting
     private let terminalSessions: any TerminalSessionStoring
+    @ObservationIgnored let repoBranchService: RepoBranchService
     var onProjectsEmptied: (([UUID]) -> Void)?
 
     var activeProjectID: UUID?
@@ -108,12 +109,14 @@ final class AppState {
         selectionStore: any ActiveProjectSelectionStoring,
         terminalViews: any TerminalViewRemoving,
         workspacePersistence: any WorkspacePersisting,
-        terminalSessions: any TerminalSessionStoring = TerminalSessionStore.shared
+        terminalSessions: any TerminalSessionStoring = TerminalSessionStore.shared,
+        repoBranchService: RepoBranchService = RepoBranchService()
     ) {
         self.selectionStore = selectionStore
         self.terminalViews = terminalViews
         self.workspacePersistence = workspacePersistence
         self.terminalSessions = terminalSessions
+        self.repoBranchService = repoBranchService
     }
 
     func restoreSelection(projects: [Project], worktrees: [UUID: [Worktree]]) {
@@ -128,7 +131,8 @@ final class AppState {
             from: snapshots,
             projects: projects,
             worktrees: worktrees,
-            sessionsByPaneID: terminalSessions.sessionsByPaneID
+            sessionsByPaneID: terminalSessions.sessionsByPaneID,
+            branchService: repoBranchService
         )
         for entry in restored {
             workspaceRoots[entry.key] = entry.root
@@ -151,8 +155,12 @@ final class AppState {
         guard let id = selectionStore.loadActiveProjectID(),
               projects.contains(where: { $0.id == id }),
               activeWorktreeID[id] != nil
-        else { return }
+        else {
+            updateActiveRepoBranchPaths()
+            return
+        }
         activeProjectID = id
+        updateActiveRepoBranchPaths()
         recordCurrentNavigationEntry()
     }
 
@@ -892,7 +900,8 @@ final class AppState {
             workspaceRoots: workspaceRoots,
             focusedAreaID: focusedAreaID,
             focusHistory: focusHistory,
-            keepProjectOpenWhenEmpty: ProjectLifecyclePreferences.keepOpenWhenNoTabs
+            keepProjectOpenWhenEmpty: ProjectLifecyclePreferences.keepOpenWhenNoTabs,
+            repoBranchService: repoBranchService
         )
         let effects = WorkspaceReducer.reduce(action: action, state: &workspace)
         if activeProjectID != workspace.activeProjectID {
@@ -910,6 +919,7 @@ final class AppState {
         if focusHistory != workspace.focusHistory {
             focusHistory = workspace.focusHistory
         }
+        updateActiveRepoBranchPaths()
         invalidateMaximizedAreas(for: action)
         reconcilePendingClosures()
 
@@ -946,6 +956,18 @@ final class AppState {
 
         saveWorkspaces()
         saveSelection()
+    }
+
+    private func updateActiveRepoBranchPaths() {
+        guard let projectID = activeProjectID,
+              let key = activeWorktreeKey(for: projectID),
+              let root = workspaceRoots[key]
+        else {
+            repoBranchService.setActiveRootPaths([])
+            return
+        }
+        let paths = root.allAreas().map(\.projectPath)
+        repoBranchService.setActiveRootPaths(paths)
     }
 
     func goBack() {

@@ -8,6 +8,25 @@ struct WorkspaceState {
     var focusedAreaID: [WorktreeKey: UUID]
     var focusHistory: [WorktreeKey: [UUID]]
     var keepProjectOpenWhenEmpty: Bool = false
+    let repoBranchService: RepoBranchService
+
+    init(
+        activeProjectID: UUID? = nil,
+        activeWorktreeID: [UUID: UUID],
+        workspaceRoots: [WorktreeKey: SplitNode],
+        focusedAreaID: [WorktreeKey: UUID],
+        focusHistory: [WorktreeKey: [UUID]],
+        keepProjectOpenWhenEmpty: Bool = false,
+        repoBranchService: RepoBranchService = .shared
+    ) {
+        self.activeProjectID = activeProjectID
+        self.activeWorktreeID = activeWorktreeID
+        self.workspaceRoots = workspaceRoots
+        self.focusedAreaID = focusedAreaID
+        self.focusHistory = focusHistory
+        self.keepProjectOpenWhenEmpty = keepProjectOpenWhenEmpty
+        self.repoBranchService = repoBranchService
+    }
 }
 
 @MainActor
@@ -224,7 +243,11 @@ enum WorkspaceReducer {
         effects: inout WorkspaceSideEffects
     ) {
         guard let key = WorkspaceReducerShared.activeKey(projectID: projectID, state: state) else { return }
-        guard let built = LayoutWorkspaceBuilder.build(config: config, projectPath: worktreePath) else { return }
+        guard let built = LayoutWorkspaceBuilder.build(
+            config: config,
+            projectPath: worktreePath,
+            branchService: state.repoBranchService
+        ) else { return }
         if let existingRoot = state.workspaceRoots[key] {
             let paneIDs = existingRoot.allAreas().flatMap { area in area.tabs.compactMap { $0.content.pane?.id } }
             effects.paneIDsToRemove.append(contentsOf: paneIDs)

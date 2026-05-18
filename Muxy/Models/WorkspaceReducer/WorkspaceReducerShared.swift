@@ -25,7 +25,7 @@ enum WorkspaceReducerShared {
     ) {
         let key = WorktreeKey(projectID: projectID, worktreeID: worktreeID)
         guard state.workspaceRoots[key] == nil else { return }
-        let area = TabArea(projectPath: worktreePath)
+        let area = TabArea(projectPath: worktreePath, branchService: state.repoBranchService)
         state.workspaceRoots[key] = .tabArea(area)
         state.focusedAreaID[key] = area.id
     }

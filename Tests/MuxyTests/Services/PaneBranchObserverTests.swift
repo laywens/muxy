@@ -120,3 +120,60 @@ struct PaneBranchObserverTests {
         #expect(observer.branch == "two")
     }
 }
+
+@MainActor
+@Suite("RepoBranchService")
+struct RepoBranchServiceTests {
+    private static let pollInterval: Duration = .milliseconds(20)
+    private static let pollTimeout: Duration = .milliseconds(2000)
+
+    private static func waitUntil(
+        _ condition: @MainActor () -> Bool
+    ) async {
+        let deadline = ContinuousClock.now.advanced(by: pollTimeout)
+        while !condition(), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: pollInterval)
+        }
+    }
+
+    @Test("canonical paths share one poller")
+    func canonicalPathsSharePoller() throws {
+        let repoURL = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: repoURL) }
+
+        let service = RepoBranchService(pollInterval: 60) { _ in "main" }
+        service.subscribe(path: repoURL.path, id: UUID()) { _ in }
+        service.subscribe(path: repoURL.appendingPathComponent(".").path, id: UUID()) { _ in }
+
+        #expect(service.activePollerCount == 1)
+    }
+
+    @Test("inactive paths do not poll until activated")
+    func inactivePathsPauseUntilActivated() async throws {
+        let repoURL = try makeTempDirectory()
+        let otherURL = try makeTempDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: repoURL)
+            try? FileManager.default.removeItem(at: otherURL)
+        }
+
+        let probe = ResolverProbe(fixed: "main")
+        let service = RepoBranchService(pollInterval: 60) { path in probe.record(path) }
+        service.setActiveRootPaths([otherURL.path])
+        service.subscribe(path: repoURL.path, id: UUID()) { _ in }
+
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(service.activePollerCount == 0)
+        #expect(probe.calls == 0)
+
+        service.setActiveRootPaths([repoURL.path])
+        await Self.waitUntil { probe.calls == 1 }
+        #expect(service.activePollerCount == 1)
+    }
+
+    private func makeTempDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+}

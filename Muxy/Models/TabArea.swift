@@ -7,44 +7,55 @@ final class TabArea: Identifiable {
     let projectPath: String
     var tabs: [TerminalTab] = []
     var activeTabID: UUID?
+    @ObservationIgnored private let branchService: RepoBranchService
     private var tabHistory: [UUID] = []
 
-    init(projectPath: String) {
+    init(projectPath: String, branchService: RepoBranchService = .shared) {
         id = UUID()
         self.projectPath = projectPath
-        let tab = TerminalTab(pane: TerminalPaneState(projectPath: projectPath))
+        self.branchService = branchService
+        let tab = TerminalTab(pane: TerminalPaneState(projectPath: projectPath, branchService: branchService))
         tabs.append(tab)
         activeTabID = tab.id
     }
 
-    init(projectPath: String, command: String?) {
+    init(projectPath: String, command: String?, branchService: RepoBranchService = .shared) {
         id = UUID()
         self.projectPath = projectPath
+        self.branchService = branchService
         let wrappedCommand = command.map { "(\($0)); exec \"$0\" -l" }
         let pane = TerminalPaneState(
             projectPath: projectPath,
             startupCommand: wrappedCommand,
-            startupCommandInteractive: wrappedCommand != nil
+            startupCommandInteractive: wrappedCommand != nil,
+            branchService: branchService
         )
         let tab = TerminalTab(pane: pane)
         tabs.append(tab)
         activeTabID = tab.id
     }
 
-    init(projectPath: String, existingTab tab: TerminalTab) {
+    init(projectPath: String, existingTab tab: TerminalTab, branchService: RepoBranchService = .shared) {
         id = UUID()
         self.projectPath = projectPath
+        self.branchService = branchService
         tabs.append(tab)
         activeTabID = tab.id
     }
 
-    init(restoring snapshot: TabAreaSnapshot, sessionsByPaneID: [UUID: TerminalSessionSnapshot] = [:]) {
+    init(
+        restoring snapshot: TabAreaSnapshot,
+        sessionsByPaneID: [UUID: TerminalSessionSnapshot] = [:],
+        branchService: RepoBranchService = .shared
+    ) {
         id = snapshot.id
         projectPath = snapshot.projectPath
+        self.branchService = branchService
         tabs = snapshot.tabs.map { tabSnapshot in
             TerminalTab(
                 restoring: tabSnapshot,
-                restoredSession: tabSnapshot.paneID.flatMap { sessionsByPaneID[$0] }
+                restoredSession: tabSnapshot.paneID.flatMap { sessionsByPaneID[$0] },
+                branchService: branchService
             )
         }
         if let index = snapshot.activeTabIndex, index >= 0, index < tabs.count {
@@ -75,11 +86,11 @@ final class TabArea: Identifiable {
     }
 
     func createTab() {
-        insertTab(TerminalTab(pane: TerminalPaneState(projectPath: projectPath)))
+        insertTab(TerminalTab(pane: TerminalPaneState(projectPath: projectPath, branchService: branchService)))
     }
 
     func createTab(inDirectory directory: String) {
-        insertTab(TerminalTab(pane: TerminalPaneState(projectPath: directory)))
+        insertTab(TerminalTab(pane: TerminalPaneState(projectPath: directory, branchService: branchService)))
     }
 
     func createCommandTab(name: String, command: String, closesOnCommandExit: Bool = true) {
@@ -91,7 +102,8 @@ final class TabArea: Identifiable {
             title: title.isEmpty ? Self.commandTitle(trimmedCommand) : title,
             startupCommand: trimmedCommand,
             startupCommandInteractive: true,
-            closesOnStartupCommandExit: closesOnCommandExit
+            closesOnStartupCommandExit: closesOnCommandExit,
+            branchService: branchService
         )
         insertTab(TerminalTab(pane: pane))
     }
@@ -104,7 +116,8 @@ final class TabArea: Identifiable {
             title: snapshot.title,
             initialWorkingDirectory: snapshot.workingDirectory,
             startupCommand: safeCommand,
-            startupCommandInteractive: safeCommand != nil
+            startupCommandInteractive: safeCommand != nil,
+            branchService: branchService
         )
         let tab = TerminalTab(pane: pane)
         tab.customTitle = snapshot.customTitle
@@ -187,7 +200,8 @@ final class TabArea: Identifiable {
             title: title,
             startupCommand: Self.editorLaunchCommand(command: command, filePath: filePath),
             startupCommandInteractive: true,
-            externalEditorFilePath: filePath
+            externalEditorFilePath: filePath,
+            branchService: branchService
         )
         insertTab(TerminalTab(pane: pane))
     }
@@ -225,7 +239,7 @@ final class TabArea: Identifiable {
 
     func createTabAdjacent(to tabID: UUID, side: InsertSide) {
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let tab = TerminalTab(pane: TerminalPaneState(projectPath: projectPath))
+        let tab = TerminalTab(pane: TerminalPaneState(projectPath: projectPath, branchService: branchService))
         let desiredIndex = side == .left ? index : index + 1
         let insertIndex = max(desiredIndex, firstUnpinnedIndex)
         tabs.insert(tab, at: insertIndex)

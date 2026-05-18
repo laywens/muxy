@@ -259,7 +259,13 @@ final class GhosttyTerminalNSView: NSView {
         delayedResizeWorkItem?.cancel()
         delayedResizeWorkItem = nil
 
-        guard let window else { return }
+        guard let window else {
+            if isWindowVisible {
+                isWindowVisible = false
+                applyOcclusionState()
+            }
+            return
+        }
 
         if surface == nil {
             createSurface()

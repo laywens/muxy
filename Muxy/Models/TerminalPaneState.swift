@@ -22,7 +22,7 @@ final class TerminalPaneState: Identifiable {
     var restoreDecision: TerminalSessionRestoreDecision = .none
     var restoreConsumed = false
     let searchState = TerminalSearchState()
-    let branchObserver = PaneBranchObserver()
+    let branchObserver: PaneBranchObserver
     @ObservationIgnored private var titleDebounceTask: Task<Void, Never>?
 
     init(
@@ -34,7 +34,8 @@ final class TerminalPaneState: Identifiable {
         startupCommandInteractive: Bool = false,
         closesOnStartupCommandExit: Bool = true,
         externalEditorFilePath: String? = nil,
-        restoredSession: TerminalSessionSnapshot? = nil
+        restoredSession: TerminalSessionSnapshot? = nil,
+        branchService: RepoBranchService = .shared
     ) {
         self.id = id
         self.projectPath = projectPath
@@ -45,6 +46,7 @@ final class TerminalPaneState: Identifiable {
         self.closesOnStartupCommandExit = closesOnStartupCommandExit
         self.externalEditorFilePath = externalEditorFilePath
         self.restoredSession = restoredSession
+        branchObserver = PaneBranchObserver(service: branchService)
         branchObserver.update(repoPath: initialWorkingDirectory ?? projectPath, refresh: false)
         if let restoredSession {
             let decision = TerminalSessionRestorePolicy.decision(for: restoredSession)
