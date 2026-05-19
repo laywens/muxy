@@ -266,14 +266,13 @@ enum GitProcessRunner {
         defer { handle.detach() }
 
         let timeoutFiredBox = TimeoutFlag()
-        let timeoutWatcher: DispatchWorkItem?
-        if let timeout = spec.timeout {
-            timeoutWatcher = ProcessTimeoutWatcher.install(on: process, timeout: timeout) { [timeoutFiredBox, spec] in
+        let timeoutWatcher: DispatchWorkItem? = if let timeout = spec.timeout {
+            ProcessTimeoutWatcher.install(on: process, timeout: timeout) { [timeoutFiredBox, spec] in
                 timeoutFiredBox.fire()
                 GitSignpost.event(spec.signpostName, "timeout")
             }
         } else {
-            timeoutWatcher = nil
+            nil
         }
         defer { timeoutWatcher?.cancel() }
 

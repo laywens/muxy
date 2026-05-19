@@ -247,7 +247,8 @@ enum WorkspaceReducer {
             config: config,
             projectPath: worktreePath,
             branchService: state.repoBranchService
-        ) else { return }
+        )
+        else { return }
         if let existingRoot = state.workspaceRoots[key] {
             let paneIDs = existingRoot.allAreas().flatMap { area in area.tabs.compactMap { $0.content.pane?.id } }
             effects.paneIDsToRemove.append(contentsOf: paneIDs)

@@ -321,7 +321,8 @@ final class MarkdownRemoteImageSchemeHandler: NSObject, WKURLSchemeHandler {
             at: directory,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
-        ) else { return }
+        )
+        else { return }
 
         struct Entry {
             let url: URL
