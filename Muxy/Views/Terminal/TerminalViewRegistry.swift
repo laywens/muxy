@@ -70,6 +70,10 @@ final class TerminalViewRegistry {
     var liveSurfaceCount: Int {
         views.values.reduce(0) { $1.surface != nil ? $0 + 1 : $0 }
     }
+
+    var occludedSurfaceCount: Int {
+        views.values.reduce(0) { $1.isSurfaceOccludedForDiagnostics ? $0 + 1 : $0 }
+    }
 }
 
 extension TerminalViewRegistry: TerminalViewRemoving {}

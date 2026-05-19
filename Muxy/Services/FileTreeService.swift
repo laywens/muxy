@@ -108,7 +108,9 @@ enum FileTreeService {
         } catch {
             return []
         }
-        let watcher = ProcessTimeoutWatcher.install(on: process, timeout: 5)
+        let diagnosticsToken = DiagnosticsCounters.shared.beginSubprocess()
+        defer { diagnosticsToken.finish() }
+        let watcher = ProcessTimeoutWatcher.install(on: process, timeout: 5, diagnosticsToken: diagnosticsToken)
 
         var payload = Data()
         for name in candidates {

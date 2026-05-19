@@ -235,6 +235,7 @@ enum GitProcessRunner {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: spec.executable)
         process.arguments = spec.arguments
+        let timeoutFiredBox = TimeoutFlag()
 
         process.environment = processEnvironment()
 
@@ -252,6 +253,10 @@ enum GitProcessRunner {
         } catch {
             throw GitProcessError.launchFailed(error.localizedDescription)
         }
+        let diagnosticsToken = DiagnosticsCounters.shared.beginSubprocess()
+        defer {
+            diagnosticsToken.finish()
+        }
 
         guard handle.attach(process) else {
             process.waitUntilExit()
@@ -265,9 +270,8 @@ enum GitProcessRunner {
         }
         defer { handle.detach() }
 
-        let timeoutFiredBox = TimeoutFlag()
         let timeoutWatcher: DispatchWorkItem? = if let timeout = spec.timeout {
-            ProcessTimeoutWatcher.install(on: process, timeout: timeout) { [timeoutFiredBox, spec] in
+            ProcessTimeoutWatcher.install(on: process, timeout: timeout, diagnosticsToken: diagnosticsToken) { [timeoutFiredBox, spec] in
                 timeoutFiredBox.fire()
                 GitSignpost.event(spec.signpostName, "timeout")
             }

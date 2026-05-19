@@ -15,6 +15,7 @@ protocol GhosttyRuntimeEventHandling {
 
 final class GhosttyRuntimeEventAdapter: GhosttyRuntimeEventHandling {
     func wakeup() {
+        DiagnosticsCounters.shared.recordGhosttyWakeup()
         DispatchQueue.main.async {
             GhosttyService.shared.tick()
         }

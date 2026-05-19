@@ -224,7 +224,9 @@ final class MobileServerService {
         } catch {
             return []
         }
-        let watcher = ProcessTimeoutWatcher.install(on: process, timeout: 5)
+        let diagnosticsToken = DiagnosticsCounters.shared.beginSubprocess()
+        defer { diagnosticsToken.finish() }
+        let watcher = ProcessTimeoutWatcher.install(on: process, timeout: 5, diagnosticsToken: diagnosticsToken)
         process.waitUntilExit()
         watcher.cancel()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()

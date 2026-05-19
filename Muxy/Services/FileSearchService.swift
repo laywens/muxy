@@ -57,6 +57,7 @@ enum FileSearchService {
 
             let resultsBox = ResultsBox()
             let handle = stdoutPipe.fileHandleForReading
+            let diagnosticsTokenBox = DiagnosticsSubprocessTokenBox()
 
             handle.readabilityHandler = { fileHandle in
                 let data = fileHandle.availableData
@@ -73,12 +74,18 @@ enum FileSearchService {
                 if let remaining = try? handle.readToEnd(), let chunk = String(data: remaining, encoding: .utf8) {
                     _ = resultsBox.append(chunk: chunk, projectPath: projectPath, limit: limit)
                 }
+                diagnosticsTokenBox.finish()
                 continuation.resume(returning: resultsBox.take())
             }
 
             do {
                 try process.run()
-                ProcessTimeoutWatcher.install(on: process, timeout: 30)
+                let diagnosticsToken = DiagnosticsCounters.shared.beginSubprocess()
+                diagnosticsTokenBox.set(diagnosticsToken)
+                ProcessTimeoutWatcher.install(on: process, timeout: 30, diagnosticsToken: diagnosticsToken)
+                if !process.isRunning {
+                    diagnosticsTokenBox.finish()
+                }
             } catch {
                 handle.readabilityHandler = nil
                 continuation.resume(returning: [])

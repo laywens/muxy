@@ -15,10 +15,15 @@ final class MemoryDiagnostics: NSObject {
     nonisolated private static let samplingInterval: TimeInterval = 60
 
     nonisolated private static let crumbInterval: TimeInterval = 60
+    nonisolated private static let mainThreadStallProbeInterval: TimeInterval = 1
+    nonisolated private static let mainThreadStallThreshold: TimeInterval = 0.5
+    nonisolated private static let mainThreadStallMaxRecordedDuration: TimeInterval = 120
 
     private let writeQueue = DispatchQueue(label: "app.muxy.diagnostics", qos: .utility)
     private var samplingTimer: DispatchSourceTimer?
     private var crumbTimer: DispatchSourceTimer?
+    private var stallTimer: DispatchSourceTimer?
+    private var lastStallProbeDate = Date()
     nonisolated private let disabledForSessionLock = OSAllocatedUnfairLock<Bool>(initialState: false)
     nonisolated private var disabledForSession: Bool {
         get { disabledForSessionLock.withLock { $0 } }
@@ -37,6 +42,7 @@ final class MemoryDiagnostics: NSObject {
         self.appState = appState
         recoverPreviousSessionIfNeeded()
         startCrumbTimer()
+        startMainThreadStallMonitor()
         observeAppLifecycle()
         if UserDefaults.standard.bool(forKey: Self.periodicLoggingDefaultsKey) {
             startPeriodicLogging()
@@ -85,6 +91,32 @@ final class MemoryDiagnostics: NSObject {
         }
         timer.resume()
         crumbTimer = timer
+    }
+
+    private func startMainThreadStallMonitor() {
+        guard stallTimer == nil else { return }
+        lastStallProbeDate = Date()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(
+            deadline: .now() + Self.mainThreadStallProbeInterval,
+            repeating: Self.mainThreadStallProbeInterval
+        )
+        timer.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.recordMainThreadStallIfNeeded()
+            }
+        }
+        timer.resume()
+        stallTimer = timer
+    }
+
+    private func recordMainThreadStallIfNeeded() {
+        let now = Date()
+        let drift = now.timeIntervalSince(lastStallProbeDate) - Self.mainThreadStallProbeInterval
+        lastStallProbeDate = now
+        guard drift >= Self.mainThreadStallThreshold else { return }
+        guard drift <= Self.mainThreadStallMaxRecordedDuration else { return }
+        DiagnosticsCounters.shared.recordMainThreadStall(duration: drift)
     }
 
     private func writeCrumbNow() {
@@ -257,6 +289,7 @@ final class MemoryDiagnostics: NSObject {
         parts.append("surfaces=\(metrics.surfaceCount)")
         parts.append("views=\(metrics.viewCount)")
         parts.append("leak=\(metrics.leak)")
+        parts.append(contentsOf: Self.formatCounterPeriodicParts(snapshot: metrics.counters))
         return parts.joined(separator: " ")
     }
 
@@ -281,8 +314,11 @@ final class MemoryDiagnostics: NSObject {
         out += "  Tabs: \(metrics.tabCount)\n"
         out += "  Expected Panes: \(metrics.paneCount)\n"
         out += "  Live Surfaces: \(metrics.surfaceCount)\n"
+        out += "  Occluded Surfaces: \(metrics.occludedSurfaceCount)\n"
         out += "  Live NSViews: \(metrics.viewCount)\n"
         out += "  Leak Indicator: \(metrics.leak)\n"
+        out += "\n"
+        out += Self.formatCounterReport(snapshot: metrics.counters)
         out += "\n"
         out += "Per-Project (anonymized)\n"
         for entry in metrics.perProject {
@@ -332,8 +368,13 @@ final class MemoryDiagnostics: NSObject {
         }
 
         let surfaceCount = TerminalViewRegistry.shared.liveSurfaceCount
+        let occludedSurfaceCount = TerminalViewRegistry.shared.occludedSurfaceCount
         let viewCount = TerminalViewRegistry.shared.liveViewCount
         let leak = max(viewCount - paneCount, surfaceCount - paneCount)
+        let branchObserverCount = appState?.repoBranchService.branchObserverCount ?? 0
+        DiagnosticsCounters.shared.setSurfaceCounts(live: surfaceCount, occluded: occludedSurfaceCount)
+        DiagnosticsCounters.shared.setBranchObserverCount(branchObserverCount)
+        let counters = DiagnosticsCounters.shared.snapshot()
 
         return Metrics(
             footprintMB: footprint / 1_048_576,
@@ -346,8 +387,10 @@ final class MemoryDiagnostics: NSObject {
             tabCount: tabCount,
             paneCount: paneCount,
             surfaceCount: surfaceCount,
+            occludedSurfaceCount: occludedSurfaceCount,
             viewCount: viewCount,
             leak: leak,
+            counters: counters,
             perProject: perProject
         )
     }
@@ -377,6 +420,43 @@ final class MemoryDiagnostics: NSObject {
         ensureLogDirectory()?.appendingPathComponent("diagnostics.log")
     }
 
+    nonisolated static func formatCounterPeriodicParts(snapshot: DiagnosticsCounterSnapshot) -> [String] {
+        [
+            "stalls=\(snapshot.mainThreadStalls)",
+            "stallMax=\(snapshot.mainThreadStallMaxMS)ms",
+            "ghosttyWakeups=\(snapshot.ghosttyWakeups)",
+            "ghosttyTicks=\(snapshot.ghosttyTicks)",
+            "occludedSurfaces=\(snapshot.occludedSurfaces)",
+            "branchObservers=\(snapshot.branchObservers)",
+            "fseventStreams=\(snapshot.fseventStreamsActive)",
+            "fseventEvents=\(snapshot.fseventEvents)",
+            "watcherRefreshes=\(snapshot.watcherRefreshes)",
+            "subprocessActive=\(snapshot.subprocessActive)",
+            "subprocessStarted=\(snapshot.subprocessStarted)",
+            "subprocessTimeouts=\(snapshot.subprocessTimedOut)",
+            "remoteBytes=\(snapshot.remoteStreamingBytes)",
+        ]
+    }
+
+    nonisolated static func formatCounterReport(snapshot: DiagnosticsCounterSnapshot) -> String {
+        var out = ""
+        out += "Diagnostics Counters\n"
+        out += "  Main Thread Stalls: \(snapshot.mainThreadStalls) "
+        out += "(total=\(snapshot.mainThreadStallTotalMS) ms max=\(snapshot.mainThreadStallMaxMS) ms)\n"
+        out += "  Ghostty: wakeups=\(snapshot.ghosttyWakeups) ticks=\(snapshot.ghosttyTicks)\n"
+        out += "  Surfaces: live=\(snapshot.liveSurfaces) occluded=\(snapshot.occludedSurfaces)\n"
+        out += "  Branch Observers: \(snapshot.branchObservers)\n"
+        out += "  FSEvents: activeStreams=\(snapshot.fseventStreamsActive) "
+        out += "created=\(snapshot.fseventStreamsCreated) stopped=\(snapshot.fseventStreamsStopped) "
+        out += "events=\(snapshot.fseventEvents) refreshes=\(snapshot.watcherRefreshes)\n"
+        out += "  Subprocesses: active=\(snapshot.subprocessActive) "
+        out += "started=\(snapshot.subprocessStarted) completed=\(snapshot.subprocessCompleted) "
+        out += "timedOut=\(snapshot.subprocessTimedOut) totalDuration=\(snapshot.subprocessTotalDurationMS) ms "
+        out += "maxDuration=\(snapshot.subprocessMaxDurationMS) ms\n"
+        out += "  Remote Streaming: outputBytes=\(snapshot.remoteStreamingBytes)\n"
+        return out
+    }
+
     private struct Metrics {
         let footprintMB: Int
         let peakMB: Int
@@ -388,8 +468,10 @@ final class MemoryDiagnostics: NSObject {
         let tabCount: Int
         let paneCount: Int
         let surfaceCount: Int
+        let occludedSurfaceCount: Int
         let viewCount: Int
         let leak: Int
+        let counters: DiagnosticsCounterSnapshot
         let perProject: [PerProject]
     }
 

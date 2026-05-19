@@ -20,6 +20,7 @@ final class FileSystemWatcher: @unchecked Sendable {
             nil,
             { _, clientInfo, numEvents, eventPaths, eventFlags, _ in
                 guard let clientInfo, numEvents > 0 else { return }
+                DiagnosticsCounters.shared.recordFSEvents(eventCount: numEvents)
                 let watcher = Unmanaged<FileSystemWatcher>.fromOpaque(clientInfo).takeUnretainedValue()
                 guard let paths = Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue() as? [String]
                 else { return }
@@ -44,7 +45,13 @@ final class FileSystemWatcher: @unchecked Sendable {
 
         self.stream = stream
         FSEventStreamSetDispatchQueue(stream, queue)
-        FSEventStreamStart(stream)
+        guard FSEventStreamStart(stream) else {
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            self.stream = nil
+            return nil
+        }
+        DiagnosticsCounters.shared.recordFSEventStreamStarted()
     }
 
     deinit {
@@ -54,12 +61,15 @@ final class FileSystemWatcher: @unchecked Sendable {
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
+        DiagnosticsCounters.shared.recordFSEventStreamStopped()
     }
 
     private func scheduleRefresh() {
         debounceWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.handler?()
+            guard let self else { return }
+            DiagnosticsCounters.shared.recordWatcherRefresh()
+            handler?()
         }
         debounceWork = work
         queue.asyncAfter(deadline: .now() + 0.3, execute: work)

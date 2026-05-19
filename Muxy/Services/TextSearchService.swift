@@ -137,6 +137,7 @@ actor SearchCoordinator {
 
         let outputBox = OutputBox()
         let stdoutHandle = stdoutPipe.fileHandleForReading
+        let diagnosticsTokenBox = DiagnosticsSubprocessTokenBox()
         stdoutHandle.readabilityHandler = { handle in
             let data = handle.availableData
             if data.isEmpty { return }
@@ -150,6 +151,7 @@ actor SearchCoordinator {
                     if let remaining = try? stdoutHandle.readToEnd(), !remaining.isEmpty {
                         outputBox.append(remaining)
                     }
+                    diagnosticsTokenBox.finish()
                     continuation.resume()
                 }
             }
@@ -157,7 +159,12 @@ actor SearchCoordinator {
 
         do {
             try process.run()
-            ProcessTimeoutWatcher.install(on: process, timeout: 30)
+            let diagnosticsToken = DiagnosticsCounters.shared.beginSubprocess()
+            diagnosticsTokenBox.set(diagnosticsToken)
+            ProcessTimeoutWatcher.install(on: process, timeout: 30, diagnosticsToken: diagnosticsToken)
+            if !process.isRunning {
+                diagnosticsTokenBox.finish()
+            }
             stdinPipe.fileHandleForWriting.write(patternData)
             try? stdinPipe.fileHandleForWriting.close()
         } catch {

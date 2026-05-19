@@ -153,6 +153,7 @@ final class GhosttyService {
     }
 
     func tick() {
+        DiagnosticsCounters.shared.recordGhosttyTick()
         guard let app else { return }
         ghostty_app_tick(app)
     }

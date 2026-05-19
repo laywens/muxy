@@ -1187,6 +1187,11 @@ final class GhosttyTerminalNSView: NSView {
         surface != nil
     }
 
+    var isSurfaceOccludedForDiagnostics: Bool {
+        guard surface != nil else { return false }
+        return !(isPaneVisible && isWindowVisible)
+    }
+
     private enum Codepoint {
         static let carriageReturn: UInt32 = 13
         static let delete: UInt32 = 127

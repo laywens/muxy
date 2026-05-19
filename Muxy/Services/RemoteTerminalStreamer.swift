@@ -41,6 +41,7 @@ final class RemoteTerminalStreamer {
 
     fileprivate func forward(paneID: UUID, bytes: Data) {
         guard let clientID = PaneOwnershipStore.shared.remoteOwner(for: paneID) else { return }
+        DiagnosticsCounters.shared.recordRemoteTerminalBytes(bytes.count)
         let event = MuxyEvent(
             event: .terminalOutput,
             data: .terminalOutput(TerminalOutputEventDTO(paneID: paneID, bytes: bytes))

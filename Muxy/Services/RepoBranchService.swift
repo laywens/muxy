@@ -74,6 +74,10 @@ final class RepoBranchService {
         pollers.count
     }
 
+    var branchObserverCount: Int {
+        listeners.values.reduce(0) { $0 + $1.count }
+    }
+
     func setActiveRootPaths(_ paths: [String]) {
         activeRootKeys = Set(paths.map { Self.canonicalKey(for: $0) })
         reconcilePollers()

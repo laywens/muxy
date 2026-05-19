@@ -17,10 +17,12 @@ enum ProcessTimeoutWatcher {
     static func install(
         on process: Process,
         timeout: TimeInterval,
+        diagnosticsToken: DiagnosticsSubprocessToken? = nil,
         onFire: (() -> Void)? = nil
     ) -> DispatchWorkItem {
         let item = DispatchWorkItem { [weak process] in
             guard let process, process.isRunning else { return }
+            diagnosticsToken?.markTimedOut()
             onFire?()
             let pid = process.processIdentifier
             if !signalProcessGroup(pid: pid, signal: SIGTERM) {

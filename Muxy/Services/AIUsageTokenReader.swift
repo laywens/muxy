@@ -56,7 +56,9 @@ enum AIUsageTokenReader {
             return nil
         }
 
-        let watcher = ProcessTimeoutWatcher.install(on: process, timeout: 5)
+        let diagnosticsToken = DiagnosticsCounters.shared.beginSubprocess()
+        defer { diagnosticsToken.finish() }
+        let watcher = ProcessTimeoutWatcher.install(on: process, timeout: 5, diagnosticsToken: diagnosticsToken)
         let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
         _ = stderr.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
