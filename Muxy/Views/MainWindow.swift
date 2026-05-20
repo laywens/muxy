@@ -968,10 +968,11 @@ struct MainWindow: View {
     }
 
     private func mountedWorktreeKeys(for project: Project) -> [WorktreeKey] {
-        guard let activeKey = appState.activeWorktreeKey(for: project.id),
-              appState.workspaceRoots[activeKey] != nil
-        else { return [] }
-        return [activeKey]
+        WorkspaceMountPlanner.mountedWorktreeKeys(
+            projectID: project.id,
+            activeWorktreeIDs: appState.activeWorktreeID,
+            workspaceRoots: appState.workspaceRoots
+        )
     }
 
     private func handleShortcutAction(_ action: ShortcutAction) -> Bool {

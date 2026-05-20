@@ -71,6 +71,19 @@ final class TerminalViewRegistry {
         views.values.reduce(0) { $1.surface != nil ? $0 + 1 : $0 }
     }
 
+    var surfaceActivity: (live: Int, occluded: Int) {
+        var live = 0
+        var occluded = 0
+        for view in views.values {
+            guard view.surface != nil else { continue }
+            live += 1
+            if view.isSurfaceOccludedForDiagnostics {
+                occluded += 1
+            }
+        }
+        return (live, occluded)
+    }
+
     var occludedSurfaceCount: Int {
         views.values.reduce(0) { $1.isSurfaceOccludedForDiagnostics ? $0 + 1 : $0 }
     }

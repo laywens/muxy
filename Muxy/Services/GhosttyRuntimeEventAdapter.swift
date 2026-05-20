@@ -13,11 +13,48 @@ protocol GhosttyRuntimeEventHandling {
     func closeSurface(userdata: UnsafeMutableRawPointer?, needsConfirm: Bool)
 }
 
+@MainActor
+private final class GhosttyWakeupScheduler {
+    static let shared = GhosttyWakeupScheduler()
+
+    private let tickThrottle = GhosttyTickThrottle()
+    private var deferredWakeupTask: Task<Void, Never>?
+
+    private init() {}
+
+    func handleWakeup() {
+        let activity = TerminalViewRegistry.shared.surfaceActivity
+        switch tickThrottle.scheduleWakeup(
+            liveSurfaces: activity.live,
+            occludedSurfaces: activity.occluded
+        ) {
+        case .immediate:
+            deferredWakeupTask?.cancel()
+            deferredWakeupTask = nil
+            GhosttyService.shared.tick()
+        case let .deferred(delay):
+            guard deferredWakeupTask == nil else { return }
+            deferredWakeupTask = Task { @MainActor [weak self] in
+                let nanoseconds = UInt64(max(0, delay) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                guard let self else { return }
+                deferredWakeupTask = nil
+                guard tickThrottle.consumeDeferredTick() else { return }
+                GhosttyService.shared.tick()
+            }
+        case .drop:
+            break
+        }
+    }
+}
+
 final class GhosttyRuntimeEventAdapter: GhosttyRuntimeEventHandling {
     func wakeup() {
         DiagnosticsCounters.shared.recordGhosttyWakeup()
         DispatchQueue.main.async {
-            GhosttyService.shared.tick()
+            MainActor.assumeIsolated {
+                GhosttyWakeupScheduler.shared.handleWakeup()
+            }
         }
     }
 

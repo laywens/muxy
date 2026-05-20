@@ -86,7 +86,7 @@ struct TabAreaView: View {
                 Rectangle().fill(MuxyTheme.border).frame(height: 1)
             }
             ZStack {
-                ForEach(area.tabs) { tab in
+                ForEach(WorkspaceMountPlanner.mountedTabs(in: area)) { tab in
                     let isActive = tab.id == area.activeTabID
                     TabContentView(
                         tab: tab,
