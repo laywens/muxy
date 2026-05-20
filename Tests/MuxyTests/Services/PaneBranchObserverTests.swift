@@ -171,6 +171,74 @@ struct RepoBranchServiceTests {
         #expect(service.activePollerCount == 1)
     }
 
+    @Test("repo activity refreshes active branch subscriptions without polling")
+    func repoActivityRefreshesActiveBranchSubscriptionsWithoutPolling() async throws {
+        let repoURL = try makeTempDirectory()
+        let childURL = repoURL.appendingPathComponent("Sources", isDirectory: true)
+        try FileManager.default.createDirectory(at: childURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repoURL) }
+        let watcherProbe = TestRepoActivityWatcherProbe()
+        let scheduler = TestRepoActivityScheduler()
+        let monitor = RepoActivityMonitor(
+            watcherFactory: watcherProbe.makeWatcher,
+            scheduler: scheduler
+        )
+        let probe = ResolverProbe(queue: ["main", "feature/activity"])
+        let service = RepoBranchService(
+            pollInterval: 60,
+            resolver: { path in probe.record(path) },
+            activityMonitor: monitor
+        )
+        service.setActiveRootPaths([repoURL.path])
+        var delivered: [String?] = []
+
+        service.subscribe(path: childURL.path, id: UUID()) { delivered.append($0) }
+        await Self.waitUntil { delivered.last == "main" }
+
+        #expect(service.activePollerCount == 0)
+        #expect(service.activeActivitySubscriptionCount == 1)
+        #expect(watcherProbe.createdPaths == [repoURL.path])
+        #expect(watcherProbe.liveCount == 1)
+        #expect(monitor.activeRootCount == 1)
+
+        watcherProbe.trigger(
+            rootPath: repoURL.path,
+            events: [RepoActivityEvent(path: repoURL.appendingPathComponent(".git/HEAD").path, isDirectory: false)]
+        )
+        scheduler.runAll()
+
+        await Self.waitUntil { delivered.last == "feature/activity" }
+        #expect(probe.paths == [childURL.path, childURL.path])
+    }
+
+    @Test("branch activity subscriptions follow active root changes")
+    func branchActivitySubscriptionsFollowActiveRootChanges() async throws {
+        let repoURL = try makeTempDirectory()
+        let childURL = repoURL.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: childURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repoURL) }
+        let watcherProbe = TestRepoActivityWatcherProbe()
+        let monitor = RepoActivityMonitor(watcherFactory: watcherProbe.makeWatcher)
+        let service = RepoBranchService(
+            pollInterval: 60,
+            resolver: { _ in "main" },
+            activityMonitor: monitor
+        )
+
+        service.setActiveRootPaths([repoURL.path])
+        service.subscribe(path: childURL.path, id: UUID()) { _ in }
+        await Self.waitUntil { watcherProbe.createdPaths == [repoURL.path] }
+
+        service.setActiveRootPaths([childURL.path])
+
+        await Self.waitUntil { watcherProbe.createdPaths == [repoURL.path, childURL.path] }
+        #expect(watcherProbe.createdPaths == [repoURL.path, childURL.path])
+        #expect(service.activePollerCount == 0)
+        #expect(service.activeActivitySubscriptionCount == 1)
+        #expect(monitor.activeRootCount == 1)
+        #expect(watcherProbe.liveCount == 1)
+    }
+
     private func makeTempDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

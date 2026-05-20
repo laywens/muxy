@@ -50,6 +50,31 @@ final class TestRepoActivityWatcherProbe: @unchecked Sendable {
     }
 }
 
+@MainActor
+final class TestRepoActivityScheduler: RepoActivityScheduling {
+    private var actions: [String: @MainActor @Sendable () -> Void] = [:]
+
+    func schedule(
+        key: String,
+        delay _: Duration,
+        action: @escaping @MainActor @Sendable () -> Void
+    ) {
+        actions[key] = action
+    }
+
+    func cancel(key: String) {
+        actions.removeValue(forKey: key)
+    }
+
+    func runAll() {
+        let pending = actions
+        actions.removeAll()
+        for action in pending.values {
+            action()
+        }
+    }
+}
+
 private final class WeakTestRepoActivityWatcher {
     weak var value: TestRepoActivityWatcher?
 

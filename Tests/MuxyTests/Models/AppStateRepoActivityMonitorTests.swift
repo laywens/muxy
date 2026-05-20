@@ -46,11 +46,44 @@ struct AppStateRepoActivityMonitorTests {
         state.deactivate(reason: .visibleTab)
     }
 
+    @Test("configures injected branch service with repo activity monitor")
+    func configuresInjectedBranchServiceWithRepoActivityMonitor() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let watcherProbe = TestRepoActivityWatcherProbe()
+        let monitor = RepoActivityMonitor(watcherFactory: watcherProbe.makeWatcher)
+        let branchService = RepoBranchService(pollInterval: 60) { _ in "main" }
+        _ = AppState(
+            selectionStore: SelectionStoreStub(),
+            terminalViews: TerminalViewRemovingStub(),
+            workspacePersistence: WorkspacePersistenceStub(),
+            repoBranchService: branchService,
+            repoActivityMonitor: monitor
+        )
+        var delivered: [String?] = []
+
+        branchService.setActiveRootPaths([root.path])
+        branchService.subscribe(path: root.path, id: UUID()) { delivered.append($0) }
+        try await waitUntil { delivered.last == "main" }
+
+        #expect(branchService.activePollerCount == 0)
+        #expect(branchService.activeActivitySubscriptionCount == 1)
+        #expect(watcherProbe.createdPaths == [root.path])
+        #expect(monitor.activeRootCount == 1)
+    }
+
     private func makeTempDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("muxy-appstate-activity-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
     }
 }
 

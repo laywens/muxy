@@ -16,17 +16,31 @@ final class RepoBranchService {
     private(set) var branches: [String: String] = [:]
     private var listeners: [String: [Subscription]] = [:]
     private var pollers: [String: Task<Void, Never>] = [:]
+    private var activitySubscriptions: [String: RepoActivitySubscription] = [:]
+    private var activitySubscriptionRoots: [String: String] = [:]
     private var resolvePaths: [String: String] = [:]
     private var activeRootKeys: Set<String>?
     private let resolver: BranchResolver
     private let pollInterval: TimeInterval
+    private var activityMonitor: RepoActivityMonitor?
 
     init(
         pollInterval: TimeInterval = 5,
-        resolver: @escaping BranchResolver = RepoBranchService.defaultResolver
+        resolver: @escaping BranchResolver = RepoBranchService.defaultResolver,
+        activityMonitor: RepoActivityMonitor? = nil
     ) {
         self.pollInterval = pollInterval
         self.resolver = resolver
+        self.activityMonitor = activityMonitor
+    }
+
+    func configure(activityMonitor: RepoActivityMonitor) {
+        self.activityMonitor = activityMonitor
+        for poller in pollers.values {
+            poller.cancel()
+        }
+        pollers.removeAll()
+        reconcileRefreshDrivers()
     }
 
     @discardableResult
@@ -38,7 +52,7 @@ final class RepoBranchService {
         listeners[key] = current
         resolvePaths[key] = path
         if isFirst, isActive(key: key) {
-            startPoller(for: key)
+            startRefreshDriver(for: key)
         } else {
             listener(branches[key])
         }
@@ -52,7 +66,7 @@ final class RepoBranchService {
         if current.isEmpty {
             listeners.removeValue(forKey: key)
             resolvePaths.removeValue(forKey: key)
-            stopPoller(for: key)
+            stopRefreshDriver(for: key)
         } else {
             listeners[key] = current
         }
@@ -60,6 +74,10 @@ final class RepoBranchService {
 
     func refresh(path: String) {
         let key = Self.canonicalKey(for: path)
+        refresh(key: key)
+    }
+
+    private func refresh(key: String) {
         guard isActive(key: key) else { return }
         Task { @MainActor [weak self] in
             await self?.doRefresh(key)
@@ -74,13 +92,17 @@ final class RepoBranchService {
         pollers.count
     }
 
+    var activeActivitySubscriptionCount: Int {
+        activitySubscriptions.count
+    }
+
     var branchObserverCount: Int {
         listeners.values.reduce(0) { $0 + $1.count }
     }
 
     func setActiveRootPaths(_ paths: [String]) {
         activeRootKeys = Set(paths.map { Self.canonicalKey(for: $0) })
-        reconcilePollers()
+        reconcileRefreshDrivers()
     }
 
     static let defaultResolver: BranchResolver = { path in
@@ -89,6 +111,16 @@ final class RepoBranchService {
         let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != "HEAD" else { return nil }
         return trimmed
+    }
+
+    private func startRefreshDriver(for path: String) {
+        if let activityMonitor {
+            pollers[path]?.cancel()
+            pollers.removeValue(forKey: path)
+            startActivitySubscription(for: path, activityMonitor: activityMonitor)
+            return
+        }
+        startPoller(for: path)
     }
 
     private func startPoller(for path: String) {
@@ -102,9 +134,43 @@ final class RepoBranchService {
         }
     }
 
+    private func startActivitySubscription(for path: String, activityMonitor: RepoActivityMonitor) {
+        guard let watchRoot = activityWatchRoot(for: path) else { return }
+        guard activitySubscriptionRoots[path] != watchRoot else { return }
+        stopActivitySubscription(for: path)
+        activitySubscriptions[path] = activityMonitor.subscribe(
+            watchPath: watchRoot,
+            repoPath: watchRoot
+        ) { [weak self] _ in
+            self?.refresh(key: path)
+        }
+        guard activitySubscriptions[path] != nil else { return }
+        activitySubscriptionRoots[path] = watchRoot
+        refresh(key: path)
+    }
+
+    private func activityWatchRoot(for key: String) -> String? {
+        guard let activeRootKeys else { return key }
+        return activeRootKeys
+            .filter { root in key == root || key.hasPrefix(root + "/") }
+            .max { $0.count < $1.count }
+    }
+
+    private func stopRefreshDriver(for path: String) {
+        stopPoller(for: path)
+        stopActivitySubscription(for: path)
+    }
+
     private func stopPoller(for path: String) {
         pollers[path]?.cancel()
         pollers.removeValue(forKey: path)
+        branches.removeValue(forKey: path)
+    }
+
+    private func stopActivitySubscription(for path: String) {
+        activitySubscriptions[path]?.cancel()
+        activitySubscriptions.removeValue(forKey: path)
+        activitySubscriptionRoots.removeValue(forKey: path)
         branches.removeValue(forKey: path)
     }
 
@@ -123,12 +189,12 @@ final class RepoBranchService {
         }
     }
 
-    private func reconcilePollers() {
+    private func reconcileRefreshDrivers() {
         for key in listeners.keys {
             if isActive(key: key) {
-                startPoller(for: key)
+                startRefreshDriver(for: key)
             } else {
-                stopPoller(for: key)
+                stopRefreshDriver(for: key)
             }
         }
     }

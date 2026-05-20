@@ -120,6 +120,7 @@ final class AppState {
         self.terminalSessions = terminalSessions
         self.repoBranchService = repoBranchService
         self.repoActivityMonitor = repoActivityMonitor
+        repoBranchService.configure(activityMonitor: repoActivityMonitor)
         VCSStateStore.shared.configure(activityMonitor: repoActivityMonitor)
     }
 
