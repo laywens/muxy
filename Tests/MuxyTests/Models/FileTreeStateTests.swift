@@ -6,6 +6,69 @@ import Testing
 @Suite("FileTreeState")
 @MainActor
 struct FileTreeStateTests {
+    @Test("uses repo activity monitor keyed by repo path across root changes")
+    func usesRepoActivityMonitorKeyedByRepoPathAcrossRootChanges() throws {
+        let fixture = try TreeFixture()
+        defer { fixture.cleanup() }
+        let watcherProbe = RepoActivityWatcherProbe()
+        let monitor = RepoActivityMonitor(
+            watcherFactory: watcherProbe.makeWatcher,
+            scheduler: ManualRepoActivityScheduler()
+        )
+        let firstRoot = fixture.path("dir-a")
+        let secondRoot = fixture.path("dir-b")
+
+        let state = FileTreeState(
+            rootPath: firstRoot,
+            repoPath: fixture.rootPath,
+            activityMonitor: monitor
+        )
+
+        #expect(watcherProbe.createdPaths == [fixture.rootPath])
+        #expect(watcherProbe.liveCount == 1)
+        #expect(monitor.activeRootCount == 1)
+
+        state.setRootPath(secondRoot, repoPath: fixture.rootPath)
+
+        #expect(watcherProbe.createdPaths == [fixture.rootPath])
+        #expect(watcherProbe.liveCount == 1)
+        #expect(monitor.activeRootCount == 1)
+    }
+
+    @Test("repo activity refreshes visible file tree entries")
+    func repoActivityRefreshesVisibleFileTreeEntries() async throws {
+        let fixture = try TreeFixture()
+        defer { fixture.cleanup() }
+        let watcherProbe = RepoActivityWatcherProbe()
+        let scheduler = ManualRepoActivityScheduler()
+        let monitor = RepoActivityMonitor(
+            watcherFactory: watcherProbe.makeWatcher,
+            scheduler: scheduler
+        )
+        let state = FileTreeState(
+            rootPath: fixture.rootPath,
+            repoPath: fixture.rootPath,
+            activityMonitor: monitor
+        )
+        state.loadRootIfNeeded()
+        try await waitForRootLoaded(state)
+        let createdPath = fixture.path("created.txt")
+        try "created".write(
+            to: URL(fileURLWithPath: createdPath),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        watcherProbe.trigger(
+            rootPath: fixture.rootPath,
+            events: [RepoActivityEvent(path: createdPath, isDirectory: false)]
+        )
+        scheduler.runAll()
+
+        try await waitForEntry(state, at: createdPath)
+    }
+
+
     @Test("moveSelection from nil selects first entry when delta is positive")
     func moveSelectionFromNilSelectsFirst() async throws {
         let fixture = try TreeFixture()
@@ -512,10 +575,121 @@ struct FileTreeStateTests {
         }
         throw FileTreeStateTestError.timeout("FileTreeState children of \(path) never loaded")
     }
+
+    private func waitForEntry(_ state: FileTreeState, at path: String) async throws {
+        for _ in 0 ..< 400 {
+            if state.entry(at: path) != nil { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        throw FileTreeStateTestError.timeout("FileTreeState entry \(path) never loaded")
+    }
 }
 
 private enum FileTreeStateTestError: Error {
     case timeout(String)
+}
+
+private final class RepoActivityWatcherProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var watchersByRoot: [String: WeakFakeRepoActivityWatcher] = [:]
+    private var storedCreatedPaths: [String] = []
+    private var liveWatcherCount = 0
+
+    var createdPaths: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCreatedPaths
+    }
+
+    var liveCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return liveWatcherCount
+    }
+
+    @MainActor
+    func makeWatcher(
+        rootPath: String,
+        handler: @escaping @MainActor @Sendable ([RepoActivityEvent]) -> Void
+    ) -> (any FileSystemWatching)? {
+        let canonical = URL(fileURLWithPath: rootPath).standardizedFileURL.path
+        lock.lock()
+        storedCreatedPaths.append(canonical)
+        liveWatcherCount += 1
+        lock.unlock()
+        let watcher = FakeRepoActivityWatcher(handler: handler) { [weak self] in
+            self?.recordWatcherDeinit()
+        }
+        watchersByRoot[canonical] = WeakFakeRepoActivityWatcher(watcher)
+        return watcher
+    }
+
+    @MainActor
+    func trigger(rootPath: String, events: [RepoActivityEvent]) {
+        let canonical = URL(fileURLWithPath: rootPath).standardizedFileURL.path
+        watchersByRoot[canonical]?.value?.trigger(events)
+    }
+
+    private func recordWatcherDeinit() {
+        lock.lock()
+        liveWatcherCount -= 1
+        lock.unlock()
+    }
+}
+
+private final class WeakFakeRepoActivityWatcher {
+    weak var value: FakeRepoActivityWatcher?
+
+    init(_ value: FakeRepoActivityWatcher) {
+        self.value = value
+    }
+}
+
+private final class FakeRepoActivityWatcher: FileSystemWatching {
+    private let handler: @MainActor @Sendable ([RepoActivityEvent]) -> Void
+    private let onDeinit: @Sendable () -> Void
+
+    init(
+        handler: @escaping @MainActor @Sendable ([RepoActivityEvent]) -> Void,
+        onDeinit: @escaping @Sendable () -> Void
+    ) {
+        self.handler = handler
+        self.onDeinit = onDeinit
+    }
+
+    deinit {
+        onDeinit()
+    }
+
+    @MainActor
+    func trigger(_ events: [RepoActivityEvent]) {
+        handler(events)
+    }
+}
+
+@MainActor
+private final class ManualRepoActivityScheduler: RepoActivityScheduling {
+    private var actions: [String: @MainActor @Sendable () -> Void] = [:]
+
+    func schedule(
+        key: String,
+        delay _: Duration,
+        action: @escaping @MainActor @Sendable () -> Void
+    ) {
+        actions[key] = action
+    }
+
+    func cancel(key: String) {
+        actions.removeValue(forKey: key)
+    }
+
+    func runAll() {
+        let pending = actions
+        actions.removeAll()
+        for action in pending.values {
+            action()
+        }
+    }
 }
 
 @MainActor

@@ -1175,12 +1175,17 @@ struct MainWindow: View {
 
     private func ensureFileTreeState(for project: Project) {
         guard let key = appState.activeWorktreeKey(for: project.id) else { return }
+        let repoPath = activeWorktreePath(for: project)
         let path = resolvedFileTreeRoot(for: project, key: key)
         if let existing = fileTreeStates[key] {
-            existing.setRootPath(path)
+            existing.setRootPath(path, repoPath: repoPath)
             return
         }
-        fileTreeStates[key] = FileTreeState(rootPath: path)
+        fileTreeStates[key] = FileTreeState(
+            rootPath: path,
+            repoPath: repoPath,
+            activityMonitor: appState.repoActivityMonitor
+        )
     }
 
     private var fileTreeSource: FileTreeSourcePreference {

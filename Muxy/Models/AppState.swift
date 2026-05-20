@@ -75,6 +75,7 @@ final class AppState {
     private let workspacePersistence: any WorkspacePersisting
     private let terminalSessions: any TerminalSessionStoring
     @ObservationIgnored let repoBranchService: RepoBranchService
+    @ObservationIgnored let repoActivityMonitor: RepoActivityMonitor
     var onProjectsEmptied: (([UUID]) -> Void)?
 
     var activeProjectID: UUID?
@@ -110,13 +111,15 @@ final class AppState {
         terminalViews: any TerminalViewRemoving,
         workspacePersistence: any WorkspacePersisting,
         terminalSessions: any TerminalSessionStoring = TerminalSessionStore.shared,
-        repoBranchService: RepoBranchService = RepoBranchService()
+        repoBranchService: RepoBranchService = RepoBranchService(),
+        repoActivityMonitor: RepoActivityMonitor = RepoActivityMonitor()
     ) {
         self.selectionStore = selectionStore
         self.terminalViews = terminalViews
         self.workspacePersistence = workspacePersistence
         self.terminalSessions = terminalSessions
         self.repoBranchService = repoBranchService
+        self.repoActivityMonitor = repoActivityMonitor
     }
 
     func restoreSelection(projects: [Project], worktrees: [UUID: [Worktree]]) {

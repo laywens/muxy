@@ -42,6 +42,7 @@ final class FileTreeState {
     private(set) var hasLoadedRoot = false
     private(set) var statuses: [String: FileStatus] = [:]
     private(set) var dirHasChange: Set<String> = []
+    private(set) var repoPath: String?
     var showOnlyChanges = false
     var hideIgnoredFiles: Bool {
         didSet {
@@ -60,13 +61,22 @@ final class FileTreeState {
     private(set) var pendingScrollTarget: String?
 
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private var watcher: FileSystemWatcher?
+    @ObservationIgnored private let activityMonitor: RepoActivityMonitor
+    @ObservationIgnored private var activitySubscription: RepoActivitySubscription?
+    @ObservationIgnored private var subscribedWatchPath: String?
     @ObservationIgnored nonisolated(unsafe) private var remoteChangeObserver: NSObjectProtocol?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var statusTask: Task<Void, Never>?
 
-    init(rootPath: String, defaults: UserDefaults = .standard) {
+    init(
+        rootPath: String,
+        repoPath: String? = nil,
+        activityMonitor: RepoActivityMonitor = RepoActivityMonitor(),
+        defaults: UserDefaults = .standard
+    ) {
         self.rootPath = rootPath
+        self.repoPath = repoPath
+        self.activityMonitor = activityMonitor
         self.defaults = defaults
         hideIgnoredFiles = defaults.bool(forKey: Self.hideIgnoredFilesDefaultsKey)
         observeRepoChanges()
@@ -86,22 +96,32 @@ final class FileTreeState {
         refreshStatuses()
     }
 
-    func setRootPath(_ newPath: String) {
-        guard newPath != rootPath else { return }
+    func setRootPath(_ newPath: String, repoPath newRepoPath: String? = nil) {
+        let resolvedRepoPath = newRepoPath ?? repoPath
+        let rootChanged = newPath != rootPath
+        let repoChanged = resolvedRepoPath != repoPath
+        guard rootChanged || repoChanged else { return }
         rootPath = newPath
-        rootEntries = []
-        children = [:]
-        expanded = []
-        loadingPaths = []
-        statuses = [:]
-        dirHasChange = []
-        selectedFilePath = nil
-        selectedPaths = []
-        selectionAnchorPath = nil
-        pendingScrollTarget = nil
-        hasLoadedRoot = false
+        repoPath = resolvedRepoPath
+        if rootChanged {
+            rootEntries = []
+            children = [:]
+            expanded = []
+            loadingPaths = []
+            statuses = [:]
+            dirHasChange = []
+            selectedFilePath = nil
+            selectedPaths = []
+            selectionAnchorPath = nil
+            pendingScrollTarget = nil
+            hasLoadedRoot = false
+        }
         installWatcher()
-        loadRootIfNeeded()
+        if rootChanged {
+            loadRootIfNeeded()
+        } else {
+            refresh()
+        }
     }
 
     func refresh() {
@@ -420,27 +440,36 @@ final class FileTreeState {
     }
 
     private func observeRepoChanges() {
-        let path = rootPath
         remoteChangeObserver = NotificationCenter.default.addObserver(
             forName: .vcsRepoDidChange,
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let notifiedPath = notification.userInfo?["repoPath"] as? String,
-                  notifiedPath == path
-            else { return }
+            guard let notifiedPath = notification.userInfo?["repoPath"] as? String else { return }
             MainActor.assumeIsolated {
-                self?.refresh()
+                guard let self else { return }
+                guard notifiedPath == self.rootPath || notifiedPath == self.repoPath else { return }
+                self.refresh()
             }
         }
     }
 
     private func installWatcher() {
-        watcher = FileSystemWatcher(directoryPath: rootPath) { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.refresh()
-            }
+        let watchPath = repoPath ?? rootPath
+        let canonicalWatchPath = canonicalPath(watchPath)
+        guard subscribedWatchPath != canonicalWatchPath else { return }
+        activitySubscription?.cancel()
+        activitySubscription = activityMonitor.subscribe(
+            watchPath: watchPath,
+            repoPath: repoPath
+        ) { [weak self] _ in
+            self?.refresh()
         }
+        subscribedWatchPath = activitySubscription == nil ? nil : canonicalWatchPath
+    }
+
+    private func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     private func refreshStatuses() {
