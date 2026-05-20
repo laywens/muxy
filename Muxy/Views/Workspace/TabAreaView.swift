@@ -217,7 +217,13 @@ private struct TabContentView: View {
                 onSplitRequest: onSplitRequest
             )
         case let .vcs(vcsState):
-            VCSTabView(state: vcsState, focused: focused, onFocus: onFocus)
+            VCSTabView(
+                state: vcsState,
+                focused: focused,
+                visible: visible,
+                activationReason: .visibleTab,
+                onFocus: onFocus
+            )
         case let .editor(editorState):
             EditorPane(state: editorState, focused: focused, onFocus: onFocus)
         case let .diffViewer(diffState):

@@ -1,6 +1,8 @@
 import CoreServices
 import Foundation
 
+protocol FileSystemWatching: AnyObject {}
+
 final class FileSystemWatcher: @unchecked Sendable {
     private let queue = DispatchQueue(label: "app.muxy.fs-watcher", qos: .utility)
     private var stream: FSEventStreamRef?
@@ -75,3 +77,5 @@ final class FileSystemWatcher: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 }
+
+extension FileSystemWatcher: FileSystemWatching {}

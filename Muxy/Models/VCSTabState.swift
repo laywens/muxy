@@ -3,6 +3,14 @@ import Foundation
 @MainActor
 @Observable
 final class VCSTabState {
+    typealias WatcherFactory = (_ directoryPath: String, _ handler: @escaping @Sendable () -> Void) -> (any FileSystemWatching)?
+
+    enum ActivationReason: Hashable {
+        case visibleTab
+        case attachedPanel
+        case detachedWindow
+    }
+
     enum ViewMode: String, CaseIterable, Identifiable {
         case unified
         case split
@@ -191,6 +199,10 @@ final class VCSTabState {
     }
 
     @ObservationIgnored private let git = GitRepositoryService()
+    @ObservationIgnored private let watcherFactory: WatcherFactory
+    @ObservationIgnored private let notificationCenter: NotificationCenter
+    @ObservationIgnored private let autoSyncNanosecondsPerMinute: UInt64
+    @ObservationIgnored private let pullRequestAutoSyncAction: @MainActor (VCSTabState) -> Void
     @ObservationIgnored private var loadFilesTask: Task<Void, Never>?
     @ObservationIgnored private var branchTask: Task<Void, Never>?
     @ObservationIgnored private var prInfoTask: Task<Void, Never>?
@@ -199,18 +211,38 @@ final class VCSTabState {
     @ObservationIgnored private var prListTask: Task<Void, Never>?
     @ObservationIgnored private var prAutoSyncTask: Task<Void, Never>?
     @ObservationIgnored private var aiGenerationTask: Task<Void, Never>?
-    @ObservationIgnored private var watcher: FileSystemWatcher?
+    @ObservationIgnored private var watcher: (any FileSystemWatching)?
     @ObservationIgnored nonisolated(unsafe) private var remoteChangeObserver: NSObjectProtocol?
     @ObservationIgnored private var isRefreshing = false
     @ObservationIgnored private var pendingRefresh = false
     @ObservationIgnored private var refreshAndWaitTask: Task<Void, Never>?
     @ObservationIgnored private var lastFetchedHeadSha: String?
     @ObservationIgnored private var pendingPRFetchBranch: String?
+    @ObservationIgnored private var activationCounts: [ActivationReason: Int] = [:]
+    @ObservationIgnored private var nextPullRequestAutoSyncDate: Date?
     private(set) var hasCompletedInitialLoad = false
     @ObservationIgnored private static let commitsPerPage = 100
 
-    init(projectPath: String) {
+    var isActive: Bool {
+        !activationCounts.isEmpty
+    }
+
+    init(
+        projectPath: String,
+        watcherFactory: @escaping WatcherFactory = { directoryPath, handler in
+            FileSystemWatcher(directoryPath: directoryPath, handler: handler)
+        },
+        notificationCenter: NotificationCenter = .default,
+        autoSyncNanosecondsPerMinute: UInt64 = 60 * 1_000_000_000,
+        pullRequestAutoSyncAction: @escaping @MainActor (VCSTabState) -> Void = { state in
+            state.loadPullRequests()
+        }
+    ) {
         self.projectPath = projectPath
+        self.watcherFactory = watcherFactory
+        self.notificationCenter = notificationCenter
+        self.autoSyncNanosecondsPerMinute = autoSyncNanosecondsPerMinute
+        self.pullRequestAutoSyncAction = pullRequestAutoSyncAction
         pullRequestAutoSyncMinutes = VCSPersistedSettings.loadAutoSyncMinutes(repoPath: projectPath)
         let visibility = VCSPersistedSettings.loadSectionVisibility(repoPath: projectPath)
         changesVisible = visibility.changes
@@ -227,9 +259,6 @@ final class VCSTabState {
             sectionRatios = storedRatios
         }
         isLoaded = true
-        startWatching()
-        observeRemoteChanges()
-        rescheduleAutoSync()
     }
 
     deinit {
@@ -240,14 +269,70 @@ final class VCSTabState {
         commitLogTask?.cancel()
         prListTask?.cancel()
         prAutoSyncTask?.cancel()
+        refreshAndWaitTask?.cancel()
         diffCache.cancelAll()
+        aiGenerationTask?.cancel()
         if let remoteChangeObserver {
-            NotificationCenter.default.removeObserver(remoteChangeObserver)
+            notificationCenter.removeObserver(remoteChangeObserver)
         }
     }
 
+    func activate(reason: ActivationReason) {
+        let wasInactive = activationCounts.isEmpty
+        activationCounts[reason, default: 0] += 1
+        guard wasInactive else { return }
+        startWatching()
+        observeRemoteChanges()
+        rescheduleAutoSync()
+        if !hasCompletedInitialLoad, !isLoadingFiles, refreshAndWaitTask == nil {
+            refresh()
+        }
+    }
+
+    func deactivate(reason: ActivationReason) {
+        guard let count = activationCounts[reason] else { return }
+        if count > 1 {
+            activationCounts[reason] = count - 1
+            return
+        }
+        activationCounts.removeValue(forKey: reason)
+        guard activationCounts.isEmpty else { return }
+        watcher = nil
+        stopObservingRemoteChanges()
+        cancelLifecycleTasksForDeactivation()
+    }
+
+    private func cancelLifecycleTasksForDeactivation() {
+        loadFilesTask?.cancel()
+        loadFilesTask = nil
+        branchTask?.cancel()
+        branchTask = nil
+        prInfoTask?.cancel()
+        prInfoTask = nil
+        loadBranchesTask?.cancel()
+        loadBranchesTask = nil
+        commitLogTask?.cancel()
+        commitLogTask = nil
+        prListTask?.cancel()
+        prListTask = nil
+        prAutoSyncTask?.cancel()
+        prAutoSyncTask = nil
+        refreshAndWaitTask?.cancel()
+        refreshAndWaitTask = nil
+        diffCache.collapseAll()
+        isRefreshing = false
+        pendingRefresh = false
+        isLoadingFiles = false
+        isLoadingBranches = false
+        isLoadingCommits = false
+        isLoadingPullRequests = false
+        isRefreshingPullRequest = false
+        pendingPRFetchBranch = nil
+    }
+
     private func startWatching() {
-        watcher = FileSystemWatcher(directoryPath: projectPath) { [weak self] in
+        guard watcher == nil else { return }
+        watcher = watcherFactory(projectPath) { [weak self] in
             Task { @MainActor [weak self] in
                 self?.watcherDidFire()
             }
@@ -255,8 +340,9 @@ final class VCSTabState {
     }
 
     private func observeRemoteChanges() {
+        guard remoteChangeObserver == nil else { return }
         let path = projectPath
-        remoteChangeObserver = NotificationCenter.default.addObserver(
+        remoteChangeObserver = notificationCenter.addObserver(
             forName: .vcsRepoDidChange,
             object: nil,
             queue: .main
@@ -270,7 +356,15 @@ final class VCSTabState {
         }
     }
 
+    private func stopObservingRemoteChanges() {
+        if let remoteChangeObserver {
+            notificationCenter.removeObserver(remoteChangeObserver)
+            self.remoteChangeObserver = nil
+        }
+    }
+
     private func watcherDidFire() {
+        guard isActive else { return }
         guard !isRefreshing else {
             pendingRefresh = true
             return
@@ -282,7 +376,7 @@ final class VCSTabState {
         performRefresh(incremental: false)
     }
 
-    func refreshAndWait() async {
+    func refreshOnDemand() async {
         if let existing = refreshAndWaitTask {
             await existing.value
             return
@@ -1311,7 +1405,7 @@ final class VCSTabState {
     func setPullRequestAutoSyncMinutes(_ minutes: Int) {
         pullRequestAutoSyncMinutes = minutes
         VCSPersistedSettings.storeAutoSyncMinutes(minutes, repoPath: projectPath)
-        rescheduleAutoSync()
+        rescheduleAutoSync(resetDeadline: true)
     }
 
     func checkoutPullRequest(_ item: GitRepositoryService.PRListItem) {
@@ -1329,7 +1423,7 @@ final class VCSTabState {
                 guard !Task.isCancelled else { return }
                 ToastState.shared.show("Checked out PR #\(item.number)")
                 commits = []
-                await refreshAndWait()
+                await refreshOnDemand()
             } catch {
                 guard !Task.isCancelled else { return }
                 showStatus(errorText(error), isError: true)
@@ -1418,20 +1512,48 @@ final class VCSTabState {
         return collapsed.isEmpty ? UUID().uuidString : collapsed
     }
 
-    private func rescheduleAutoSync() {
+    private func rescheduleAutoSync(resetDeadline: Bool = false) {
         prAutoSyncTask?.cancel()
+        prAutoSyncTask = nil
         let minutes = pullRequestAutoSyncMinutes
-        guard minutes > 0 else { return }
-        let interval = UInt64(minutes) * 60 * 1_000_000_000
+        guard minutes > 0 else {
+            nextPullRequestAutoSyncDate = nil
+            return
+        }
+        let interval = autoSyncInterval(forMinutes: minutes)
+        if resetDeadline || nextPullRequestAutoSyncDate == nil {
+            nextPullRequestAutoSyncDate = Date().addingTimeInterval(TimeInterval(interval) / 1_000_000_000)
+        }
+        guard isActive else { return }
         prAutoSyncTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: interval)
+                let delay = await MainActor.run {
+                    guard let self, let nextPullRequestAutoSyncDate = self.nextPullRequestAutoSyncDate else {
+                        return UInt64?.none
+                    }
+                    let remaining = max(0, nextPullRequestAutoSyncDate.timeIntervalSinceNow)
+                    return UInt64(remaining * 1_000_000_000)
+                }
+                guard let delay else { return }
+                try? await Task.sleep(nanoseconds: delay)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    self?.loadPullRequests()
+                    guard let self, self.isActive else { return }
+                    self.pullRequestAutoSyncAction(self)
+                    let minutes = self.pullRequestAutoSyncMinutes
+                    guard minutes > 0 else {
+                        self.nextPullRequestAutoSyncDate = nil
+                        return
+                    }
+                    let interval = self.autoSyncInterval(forMinutes: minutes)
+                    self.nextPullRequestAutoSyncDate = Date().addingTimeInterval(TimeInterval(interval) / 1_000_000_000)
                 }
             }
         }
+    }
+
+    private func autoSyncInterval(forMinutes minutes: Int) -> UInt64 {
+        UInt64(minutes) * autoSyncNanosecondsPerMinute
     }
 
     func setChangesVisible(_ visible: Bool) {

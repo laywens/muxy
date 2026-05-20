@@ -1094,8 +1094,14 @@ struct MainWindow: View {
                     value: $vcsPanelWidth,
                     range: AttachedVCSLayout.minWidth ... AttachedVCSLayout.maxWidth
                 )
-                VCSTabView(state: state, focused: false, onFocus: {})
-                    .frame(width: vcsPanelWidth)
+                VCSTabView(
+                    state: state,
+                    focused: false,
+                    visible: true,
+                    activationReason: .attachedPanel,
+                    onFocus: {}
+                )
+                .frame(width: vcsPanelWidth)
             }
         } else if fileTreePanelVisible, let treeState = activeFileTreeState {
             HStack(spacing: 0) {

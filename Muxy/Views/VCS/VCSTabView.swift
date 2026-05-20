@@ -4,10 +4,13 @@ import SwiftUI
 struct VCSTabView: View {
     @Bindable var state: VCSTabState
     let focused: Bool
+    let visible: Bool
+    let activationReason: VCSTabState.ActivationReason
     let onFocus: () -> Void
     @Environment(AppState.self) private var appState
     @Environment(ProjectStore.self) private var projectStore
     @Environment(WorktreeStore.self) private var worktreeStore
+    @State private var activatedState: VCSTabState?
     @State private var showDiscardAllConfirmation = false
     @State private var pendingDiscardPath: String?
     @State private var showCreateBranchSheet = false
@@ -43,14 +46,16 @@ struct VCSTabView: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onFocus)
         .onAppear {
-            if !state.hasCompletedInitialLoad, !state.isLoadingFiles {
-                state.refresh()
-            }
+            synchronizeActivation()
         }
-        .onChange(of: state.projectPath) {
-            if !state.hasCompletedInitialLoad, !state.isLoadingFiles {
-                state.refresh()
-            }
+        .onDisappear {
+            deactivateCurrentState()
+        }
+        .onChange(of: visible) {
+            synchronizeActivation()
+        }
+        .onChange(of: ObjectIdentifier(state)) {
+            synchronizeActivation()
         }
         .onChange(of: state.showPushUpstreamConfirmation) { _, show in
             guard show else { return }
@@ -108,6 +113,25 @@ struct VCSTabView: View {
                 Text(message)
             }
         }
+    }
+
+    private func synchronizeActivation() {
+        if let activatedState, activatedState !== state {
+            activatedState.deactivate(reason: activationReason)
+            self.activatedState = nil
+        }
+        guard visible else {
+            deactivateCurrentState()
+            return
+        }
+        guard activatedState !== state else { return }
+        state.activate(reason: activationReason)
+        activatedState = state
+    }
+
+    private func deactivateCurrentState() {
+        activatedState?.deactivate(reason: activationReason)
+        activatedState = nil
     }
 
     private var header: some View {

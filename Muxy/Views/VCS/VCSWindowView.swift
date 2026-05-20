@@ -14,7 +14,13 @@ struct VCSWindowView: View {
     var body: some View {
         Group {
             if let state = activeState {
-                VCSTabView(state: state, focused: true, onFocus: {})
+                VCSTabView(
+                    state: state,
+                    focused: true,
+                    visible: true,
+                    activationReason: .detachedWindow,
+                    onFocus: {}
+                )
             } else {
                 Text("No project selected")
                     .font(.system(size: UIMetrics.fontEmphasis))

@@ -379,7 +379,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         guard let repoPath = try? repoPath(projectID: projectID) else { return nil }
         let state = VCSStateStore.shared.state(for: repoPath)
         if !state.hasCompletedInitialLoad {
-            await state.refreshAndWait()
+            await state.refreshOnDemand()
         }
         return Self.toStatusDTO(state)
     }
@@ -387,7 +387,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
     func vcsRefresh(projectID: UUID) async -> VCSStatusDTO? {
         guard let repoPath = try? repoPath(projectID: projectID) else { return nil }
         let state = VCSStateStore.shared.state(for: repoPath)
-        await state.refreshAndWait()
+        await state.refreshOnDemand()
         return Self.toStatusDTO(state)
     }
 
@@ -443,7 +443,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         let repoPath = try repoPath(projectID: projectID)
         let state = VCSStateStore.shared.state(for: repoPath)
         if !state.hasCompletedInitialLoad {
-            await state.refreshAndWait()
+            await state.refreshOnDemand()
         }
         let file = state.files.first { $0.path == filePath }
         if file?.isBinary == true {
@@ -505,7 +505,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         let repoPath = try repoPath(projectID: projectID)
         let state = VCSStateStore.shared.state(for: repoPath)
         if !state.hasCompletedInitialLoad {
-            await state.refreshAndWait()
+            await state.refreshOnDemand()
         }
         guard let current = state.branchName else {
             throw RemoteVCSError.notGitRepo
