@@ -162,6 +162,97 @@ struct VCSTabStateLifecycleTests {
         state.deactivate(reason: .visibleTab)
     }
 
+    @Test("watcher burst during refresh and backoff waits for one follow-up")
+    func watcherBurstDuringRefreshAndBackoffWaitsForOneFollowUp() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = SlowStatusRunner()
+        let monitorProbe = TestRepoActivityWatcherProbe()
+        let monitor = RepoActivityMonitor(debounceDelay: .milliseconds(1), watcherFactory: monitorProbe.makeWatcher)
+        let git = GitRepositoryService { repoPath, arguments, lineLimit, timeout in
+            try await runner.runGit(
+                repoPath: repoPath,
+                arguments: arguments,
+                lineLimit: lineLimit,
+                timeout: timeout
+            )
+        }
+        let state = VCSTabState(
+            projectPath: root.path,
+            activityMonitor: monitor,
+            notificationCenter: NotificationCenter(),
+            git: git,
+            refreshBackoffNanoseconds: 80_000_000
+        )
+
+        state.activate(reason: .visibleTab)
+        await runner.waitForStatusCallCount(1)
+        monitorProbe.trigger(rootPath: root.path, events: [
+            RepoActivityEvent(path: root.appendingPathComponent("file.swift").path, isDirectory: false),
+        ])
+        monitorProbe.trigger(rootPath: root.path, events: [
+            RepoActivityEvent(path: root.appendingPathComponent("other.swift").path, isDirectory: false),
+        ])
+        try await Task.sleep(nanoseconds: 10_000_000)
+        await runner.releaseStatusCalls()
+        try await Task.sleep(nanoseconds: 10_000_000)
+        monitorProbe.trigger(rootPath: root.path, events: [
+            RepoActivityEvent(path: root.appendingPathComponent("third.swift").path, isDirectory: false),
+        ])
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(await runner.statusCallCount == 1)
+
+        await runner.waitForStatusCallCount(2)
+        #expect(await runner.statusCallCount == 2)
+        await runner.releaseStatusCalls()
+        state.deactivate(reason: .visibleTab)
+    }
+
+    @Test("refresh reloads expanded diff when status metadata is unchanged")
+    func refreshReloadsExpandedDiffWhenStatusMetadataIsUnchanged() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = StatusDiffRunner()
+        let state = VCSTabState(
+            projectPath: root.path,
+            watcherFactory: WatcherCounter().makeWatcher,
+            notificationCenter: NotificationCenter(),
+            git: GitRepositoryService { repoPath, arguments, lineLimit, timeout in
+                try await runner.runGit(
+                    repoPath: repoPath,
+                    arguments: arguments,
+                    lineLimit: lineLimit,
+                    timeout: timeout
+                )
+            }
+        )
+        state.files = [
+            GitStatusFile(
+                path: "tracked.swift",
+                oldPath: nil,
+                xStatus: " ",
+                yStatus: "M",
+                additions: nil,
+                deletions: nil,
+                isBinary: false
+            ),
+        ]
+        state.expandedFilePaths = ["tracked.swift"]
+        state.diffCache.store(
+            DiffCache.LoadedDiff(rows: [], additions: 0, deletions: 0, truncated: false),
+            for: "tracked.swift",
+            pinnedPaths: ["tracked.swift"]
+        )
+
+        state.refresh()
+
+        await runner.waitForStatusCallCount(1)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(await runner.diffCallCount == 1)
+    }
+
     private func tempPath() -> String {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("muxy-vcs-lifecycle-\(UUID().uuidString)", isDirectory: true)
@@ -246,6 +337,141 @@ private final class AutoSyncProbe: @unchecked Sendable {
             }
             try await group.next()
             group.cancelAll()
+        }
+    }
+}
+
+private actor SlowStatusRunner {
+    private var queuedStatusContinuations: [CheckedContinuation<Void, Never>] = []
+    private var statusWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var storedStatusCallCount = 0
+
+    var statusCallCount: Int {
+        storedStatusCallCount
+    }
+
+    func runGit(
+        repoPath _: String,
+        arguments: [String],
+        lineLimit _: Int?,
+        timeout _: TimeInterval?
+    ) async throws -> GitProcessResult {
+        if arguments == ["rev-parse", "--is-inside-work-tree"] {
+            return GitProcessResult(
+                status: 0,
+                stdout: "true\n",
+                stdoutData: Data("true\n".utf8),
+                stderr: "",
+                truncated: false
+            )
+        }
+        if arguments.contains("status"), arguments.contains("--porcelain=1") {
+            storedStatusCallCount += 1
+            resumeSatisfiedWaiters()
+            await withCheckedContinuation { continuation in
+                queuedStatusContinuations.append(continuation)
+            }
+            return GitProcessResult(status: 0, stdout: "", stdoutData: Data(), stderr: "", truncated: false)
+        }
+        return GitProcessResult(status: 0, stdout: "", stdoutData: Data(), stderr: "", truncated: false)
+    }
+
+    func waitForStatusCallCount(_ count: Int) async {
+        if storedStatusCallCount >= count { return }
+        await withCheckedContinuation { continuation in
+            statusWaiters.append((count, continuation))
+        }
+    }
+
+    func releaseStatusCalls() {
+        let continuations = queuedStatusContinuations
+        queuedStatusContinuations.removeAll()
+        for continuation in continuations {
+            continuation.resume()
+        }
+    }
+
+    private func resumeSatisfiedWaiters() {
+        let ready = statusWaiters.filter { storedStatusCallCount >= $0.count }
+        statusWaiters.removeAll { storedStatusCallCount >= $0.count }
+        for waiter in ready {
+            waiter.continuation.resume()
+        }
+    }
+}
+
+private actor StatusDiffRunner {
+    private var statusWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var diffWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var storedStatusCallCount = 0
+    private var storedDiffCallCount = 0
+
+    var diffCallCount: Int {
+        storedDiffCallCount
+    }
+
+    func runGit(
+        repoPath _: String,
+        arguments: [String],
+        lineLimit _: Int?,
+        timeout _: TimeInterval?
+    ) async throws -> GitProcessResult {
+        if arguments == ["rev-parse", "--is-inside-work-tree"] {
+            return GitProcessResult(
+                status: 0,
+                stdout: "true\n",
+                stdoutData: Data("true\n".utf8),
+                stderr: "",
+                truncated: false
+            )
+        }
+        if arguments.contains("status"), arguments.contains("--untracked-files=all") {
+            storedStatusCallCount += 1
+            resumeSatisfiedStatusWaiters()
+            let output = " M tracked.swift\0"
+            return GitProcessResult(status: 0, stdout: output, stdoutData: Data(output.utf8), stderr: "", truncated: false)
+        }
+        if arguments.contains("diff"), arguments.contains("tracked.swift") {
+            storedDiffCallCount += 1
+            resumeSatisfiedDiffWaiters()
+            let output = """
+            diff --git a/tracked.swift b/tracked.swift
+            @@ -1 +1 @@
+            -old
+            +new
+            """
+            return GitProcessResult(status: 0, stdout: output, stdoutData: Data(output.utf8), stderr: "", truncated: false)
+        }
+        return GitProcessResult(status: 0, stdout: "", stdoutData: Data(), stderr: "", truncated: false)
+    }
+
+    func waitForStatusCallCount(_ count: Int) async {
+        if storedStatusCallCount >= count { return }
+        await withCheckedContinuation { continuation in
+            statusWaiters.append((count, continuation))
+        }
+    }
+
+    func waitForDiffCallCount(_ count: Int) async {
+        if storedDiffCallCount >= count { return }
+        await withCheckedContinuation { continuation in
+            diffWaiters.append((count, continuation))
+        }
+    }
+
+    private func resumeSatisfiedStatusWaiters() {
+        let ready = statusWaiters.filter { storedStatusCallCount >= $0.count }
+        statusWaiters.removeAll { storedStatusCallCount >= $0.count }
+        for waiter in ready {
+            waiter.continuation.resume()
+        }
+    }
+
+    private func resumeSatisfiedDiffWaiters() {
+        let ready = diffWaiters.filter { storedDiffCallCount >= $0.count }
+        diffWaiters.removeAll { storedDiffCallCount >= $0.count }
+        for waiter in ready {
+            waiter.continuation.resume()
         }
     }
 }

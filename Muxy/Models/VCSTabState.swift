@@ -198,9 +198,10 @@ final class VCSTabState {
         return true
     }
 
-    @ObservationIgnored private let git = GitRepositoryService()
+    @ObservationIgnored private let git: GitRepositoryService
     @ObservationIgnored private let activityMonitor: RepoActivityMonitor
     @ObservationIgnored private let notificationCenter: NotificationCenter
+    @ObservationIgnored private let refreshBackoffNanoseconds: UInt64
     @ObservationIgnored private let autoSyncNanosecondsPerMinute: UInt64
     @ObservationIgnored private let pullRequestAutoSyncAction: @MainActor (VCSTabState) -> Void
     @ObservationIgnored private var loadFilesTask: Task<Void, Never>?
@@ -216,6 +217,7 @@ final class VCSTabState {
     @ObservationIgnored private var isRefreshing = false
     @ObservationIgnored private var pendingRefresh = false
     @ObservationIgnored private var refreshAndWaitTask: Task<Void, Never>?
+    @ObservationIgnored private var refreshBackoffTask: Task<Void, Never>?
     @ObservationIgnored private var lastFetchedHeadSha: String?
     @ObservationIgnored private var pendingPRFetchBranch: String?
     @ObservationIgnored private var activationCounts: [ActivationReason: Int] = [:]
@@ -234,14 +236,18 @@ final class VCSTabState {
         },
         activityMonitor: RepoActivityMonitor? = nil,
         notificationCenter: NotificationCenter = .default,
+        git: GitRepositoryService = GitRepositoryService(),
+        refreshBackoffNanoseconds: UInt64 = 150_000_000,
         autoSyncNanosecondsPerMinute: UInt64 = 60 * 1_000_000_000,
         pullRequestAutoSyncAction: @escaping @MainActor (VCSTabState) -> Void = { state in
             state.loadPullRequests()
         }
     ) {
         self.projectPath = projectPath
+        self.git = git
         self.activityMonitor = activityMonitor ?? Self.makeActivityMonitor(watcherFactory: watcherFactory)
         self.notificationCenter = notificationCenter
+        self.refreshBackoffNanoseconds = refreshBackoffNanoseconds
         self.autoSyncNanosecondsPerMinute = autoSyncNanosecondsPerMinute
         self.pullRequestAutoSyncAction = pullRequestAutoSyncAction
         pullRequestAutoSyncMinutes = VCSPersistedSettings.loadAutoSyncMinutes(repoPath: projectPath)
@@ -319,6 +325,8 @@ final class VCSTabState {
         prListTask = nil
         prAutoSyncTask?.cancel()
         prAutoSyncTask = nil
+        refreshBackoffTask?.cancel()
+        refreshBackoffTask = nil
         refreshAndWaitTask?.cancel()
         refreshAndWaitTask = nil
         diffCache.collapseAll()
@@ -378,6 +386,10 @@ final class VCSTabState {
 
     private func watcherDidFire() {
         guard isActive else { return }
+        guard refreshBackoffTask == nil else {
+            pendingRefresh = true
+            return
+        }
         guard !isRefreshing else {
             pendingRefresh = true
             return
@@ -479,7 +491,7 @@ final class VCSTabState {
                 GitSignpost.end("performRefresh", refreshSignpost)
                 if self.pendingRefresh {
                     self.pendingRefresh = false
-                    self.performRefresh(incremental: true)
+                    self.schedulePendingRefresh()
                 }
             }
             do {
@@ -526,7 +538,7 @@ final class VCSTabState {
                 isLoadingFiles = false
                 hasCompletedInitialLoad = true
 
-                for path in expandedFilePaths where validPaths.contains(path) && changedPaths.contains(path) {
+                for path in expandedFilePaths where validPaths.contains(path) {
                     loadDiff(filePath: path, forceFull: false)
                 }
 
@@ -547,6 +559,24 @@ final class VCSTabState {
                 errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 isLoadingFiles = false
             }
+        }
+    }
+
+    private func schedulePendingRefresh() {
+        refreshBackoffTask?.cancel()
+        let delay = refreshBackoffNanoseconds
+        refreshBackoffTask = Task { @MainActor [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: delay)
+            }
+            guard !Task.isCancelled, let self, isActive else { return }
+            refreshBackoffTask = nil
+            pendingRefresh = false
+            guard !isRefreshing else {
+                pendingRefresh = true
+                return
+            }
+            performRefresh(incremental: true)
         }
     }
 

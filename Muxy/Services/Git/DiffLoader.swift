@@ -22,11 +22,11 @@ enum DiffLoader {
         let lineLimit = request.forceFull ? nil : previewLineLimit
         let task = Task { @MainActor in
             do {
-                let result = try await git.patchAndCompare(
+                let result = try await git.detailedDiff(
                     repoPath: request.repoPath,
                     filePath: request.filePath,
-                    lineLimit: lineLimit,
-                    hints: request.hints
+                    hints: request.hints,
+                    lineLimit: lineLimit
                 )
                 guard !Task.isCancelled else { return }
                 cache.store(

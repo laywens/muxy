@@ -1,6 +1,13 @@
 import Foundation
 
 struct GitRepositoryService {
+    typealias RunGit = @Sendable (
+        _ repoPath: String,
+        _ arguments: [String],
+        _ lineLimit: Int?,
+        _ timeout: TimeInterval?
+    ) async throws -> GitProcessResult
+
     struct PatchAndCompareResult {
         let rows: [DiffDisplayRow]
         let truncated: Bool
@@ -30,6 +37,36 @@ struct GitRepositoryService {
                 message
             }
         }
+    }
+
+    private let runGitCommand: RunGit
+    static let wholeFileDiffByteLimit = 2 * 1024 * 1024
+
+    init(runGit: @escaping RunGit = GitRepositoryService.defaultRunGit) {
+        runGitCommand = runGit
+    }
+
+    private static func defaultRunGit(
+        repoPath: String,
+        arguments: [String],
+        lineLimit: Int?,
+        timeout: TimeInterval?
+    ) async throws -> GitProcessResult {
+        try await GitProcessRunner.runGit(
+            repoPath: repoPath,
+            arguments: arguments,
+            lineLimit: lineLimit,
+            timeout: timeout
+        )
+    }
+
+    private func runGit(
+        repoPath: String,
+        arguments: [String],
+        lineLimit: Int? = nil,
+        timeout: TimeInterval? = nil
+    ) async throws -> GitProcessResult {
+        try await runGitCommand(repoPath, arguments, lineLimit, timeout)
     }
 
     struct PRInfo: Equatable {
@@ -892,12 +929,9 @@ struct GitRepositoryService {
         GitMetadataCache.shared.invalidatePRInfo(repoPath: repoPath)
     }
 
-    func changedFiles(repoPath: String) async throws -> [GitStatusFile] {
-        let signpostID = GitSignpost.begin("changedFiles")
-        defer { GitSignpost.end("changedFiles", signpostID) }
-
+    private func verifyRepoIfNeeded(repoPath: String) async throws {
         if !GitMetadataCache.shared.isVerifiedGitRepo(repoPath: repoPath) {
-            let verifyResult = try await GitProcessRunner.runGit(
+            let verifyResult = try await runGit(
                 repoPath: repoPath,
                 arguments: ["rev-parse", "--is-inside-work-tree"]
             )
@@ -908,71 +942,27 @@ struct GitRepositoryService {
             }
             GitMetadataCache.shared.markVerifiedGitRepo(repoPath: repoPath)
         }
+    }
 
-        async let statusTask = GitProcessRunner.runGit(
+    func changedFiles(repoPath: String) async throws -> [GitStatusFile] {
+        try await quickStatus(repoPath: repoPath)
+    }
+
+    func quickStatus(repoPath: String) async throws -> [GitStatusFile] {
+        let signpostID = GitSignpost.begin("quickStatus")
+        defer { GitSignpost.end("quickStatus", signpostID) }
+
+        try await verifyRepoIfNeeded(repoPath: repoPath)
+
+        let statusResult = try await runGit(
             repoPath: repoPath,
             arguments: ["-c", "core.quotepath=false", "status", "--porcelain=1", "-z", "--untracked-files=all"]
         )
-        async let numstatTask = GitProcessRunner.runGit(
-            repoPath: repoPath,
-            arguments: ["-c", "core.quotepath=false", "diff", "HEAD", "--numstat", "--no-color", "--no-ext-diff"]
-        )
-        async let stagedNumstatTask = GitProcessRunner.runGit(
-            repoPath: repoPath,
-            arguments: ["-c", "core.quotepath=false", "diff", "--cached", "--numstat", "--no-color", "--no-ext-diff"]
-        )
-        async let unstagedNumstatTask = GitProcessRunner.runGit(
-            repoPath: repoPath,
-            arguments: ["-c", "core.quotepath=false", "diff", "--numstat", "--no-color", "--no-ext-diff"]
-        )
-
-        let statusResult = try await statusTask
         guard statusResult.status == 0 else {
-            _ = try? await numstatTask
-            _ = try? await stagedNumstatTask
-            _ = try? await unstagedNumstatTask
             throw GitError.commandFailed(statusResult.stderr.isEmpty ? "Failed to load Git status." : statusResult.stderr)
         }
 
-        let numstatResult = try await numstatTask
-        let stagedNumstatResult = try await stagedNumstatTask
-        let unstagedNumstatResult = try await unstagedNumstatTask
-        let stats = numstatResult.status == 0 ? GitStatusParser.parseNumstat(numstatResult.stdout) : [:]
-        let stagedStats = stagedNumstatResult.status == 0 ? GitStatusParser.parseNumstat(stagedNumstatResult.stdout) : [:]
-        let unstagedStats = unstagedNumstatResult.status == 0 ? GitStatusParser.parseNumstat(unstagedNumstatResult.stdout) : [:]
-
-        return GitStatusParser.parseStatusPorcelain(statusResult.stdoutData, stats: stats).map { file in
-            let staged = stagedStats[file.path]
-            let unstaged = unstagedStats[file.path]
-            let file = GitStatusFile(
-                path: file.path,
-                oldPath: file.oldPath,
-                xStatus: file.xStatus,
-                yStatus: file.yStatus,
-                additions: file.additions,
-                deletions: file.deletions,
-                stagedAdditions: staged?.additions,
-                stagedDeletions: staged?.deletions,
-                unstagedAdditions: unstaged?.additions,
-                unstagedDeletions: unstaged?.deletions,
-                isBinary: file.isBinary || staged?.isBinary == true || unstaged?.isBinary == true
-            )
-            guard file.additions == nil, file.xStatus == "?" || file.xStatus == "A" else { return file }
-            let lineCount = Self.countLines(repoPath: repoPath, relativePath: file.path)
-            return GitStatusFile(
-                path: file.path,
-                oldPath: file.oldPath,
-                xStatus: file.xStatus,
-                yStatus: file.yStatus,
-                additions: lineCount,
-                deletions: 0,
-                stagedAdditions: file.stagedAdditions,
-                stagedDeletions: file.stagedDeletions,
-                unstagedAdditions: file.unstagedAdditions,
-                unstagedDeletions: file.unstagedDeletions,
-                isBinary: file.isBinary
-            )
-        }
+        return GitStatusParser.parseStatusPorcelain(statusResult.stdoutData, stats: [:])
     }
 
     func changedFiles(repoPath: String, range: DiffRange) async throws -> [GitStatusFile] {
@@ -1004,24 +994,28 @@ struct GitRepositoryService {
         return try await changedFiles(repoPath: repoPath, range: DiffRange(baseRef: "\(commit)^", headRef: commit))
     }
 
-    private static func countLines(repoPath: String, relativePath: String) -> Int? {
-        let fullPath = (repoPath as NSString).appendingPathComponent(relativePath)
-        guard let data = FileManager.default.contents(atPath: fullPath),
-              let content = String(data: data, encoding: .utf8)
-        else {
-            return nil
-        }
-        return content.isEmpty ? 0 : content.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).count
-    }
-
     func patchAndCompare(
         repoPath: String,
         filePath: String,
         lineLimit: Int?,
         hints: DiffHints = .unknown
     ) async throws -> PatchAndCompareResult {
-        let signpostID = GitSignpost.begin("patchAndCompare", filePath)
-        defer { GitSignpost.end("patchAndCompare", signpostID) }
+        try await detailedDiff(
+            repoPath: repoPath,
+            filePath: filePath,
+            hints: hints,
+            lineLimit: lineLimit
+        )
+    }
+
+    func detailedDiff(
+        repoPath: String,
+        filePath: String,
+        hints: DiffHints = .unknown,
+        lineLimit: Int?
+    ) async throws -> PatchAndCompareResult {
+        let signpostID = GitSignpost.begin("detailedDiff", filePath)
+        defer { GitSignpost.end("detailedDiff", signpostID) }
 
         if hints.isUntrackedOrNew {
             return try untrackedOrNewFileDiff(repoPath: repoPath, filePath: filePath, lineLimit: lineLimit)
@@ -1036,7 +1030,7 @@ struct GitRepositoryService {
         }
 
         async let stagedTask: GitProcessResult? = hints.hasStaged
-            ? GitProcessRunner.runGit(
+            ? runGit(
                 repoPath: repoPath,
                 arguments: ["-c", "core.quotepath=false", "diff", "--cached", "--no-color", "--no-ext-diff", "--", filePath],
                 lineLimit: lineLimit
@@ -1044,7 +1038,7 @@ struct GitRepositoryService {
             : nil
 
         async let unstagedTask: GitProcessResult? = hints.hasUnstaged
-            ? GitProcessRunner.runGit(
+            ? runGit(
                 repoPath: repoPath,
                 arguments: ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--", filePath],
                 lineLimit: lineLimit
@@ -1195,7 +1189,7 @@ struct GitRepositoryService {
         filePath: String,
         lineLimit: Int?
     ) async throws -> PatchAndCompareResult {
-        let statusResult = try await GitProcessRunner.runGit(
+        let statusResult = try await runGit(
             repoPath: repoPath,
             arguments: ["-c", "core.quotepath=false", "status", "--porcelain=1", "-z", "--", filePath]
         )
@@ -1205,12 +1199,12 @@ struct GitRepositoryService {
             return try untrackedOrNewFileDiff(repoPath: repoPath, filePath: filePath, lineLimit: lineLimit)
         }
 
-        async let stagedTask = GitProcessRunner.runGit(
+        async let stagedTask = runGit(
             repoPath: repoPath,
             arguments: ["-c", "core.quotepath=false", "diff", "--cached", "--no-color", "--no-ext-diff", "--", filePath],
             lineLimit: lineLimit
         )
-        async let unstagedTask = GitProcessRunner.runGit(
+        async let unstagedTask = runGit(
             repoPath: repoPath,
             arguments: ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--", filePath],
             lineLimit: lineLimit
@@ -1248,6 +1242,12 @@ struct GitRepositoryService {
         let resolvedFile = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
         guard resolvedFile.hasPrefix(resolvedRepo + "/") else {
             throw GitError.commandFailed("File path is outside the repository.")
+        }
+        if Self.shouldSkipWholeFileDiff(filePath: filePath) {
+            return PatchAndCompareResult(rows: [], truncated: false, additions: 0, deletions: 0)
+        }
+        if let fileSize = Self.fileSize(atPath: fileURL.path), fileSize > Self.wholeFileDiffByteLimit {
+            return PatchAndCompareResult(rows: [], truncated: true, additions: 0, deletions: 0)
         }
         guard let fileLines = try readDiffPreviewLines(path: fileURL.path, lineLimit: lineLimit) else {
             return PatchAndCompareResult(rows: [], truncated: false, additions: 0, deletions: 0)
@@ -1289,6 +1289,7 @@ struct GitRepositoryService {
 
         guard let lineLimit else {
             let data = handle.readDataToEndOfFile()
+            guard !Self.looksBinary(data) else { return nil }
             guard let content = String(data: data, encoding: .utf8) else { return nil }
             return (content.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init), false)
         }
@@ -1306,6 +1307,7 @@ struct GitRepositoryService {
                 }
                 return (lines, false)
             }
+            guard !Self.looksBinary(chunk) else { return nil }
 
             for byte in chunk {
                 if byte == 0x0A {
@@ -1322,6 +1324,20 @@ struct GitRepositoryService {
         }
 
         return (lines, true)
+    }
+
+    private static func shouldSkipWholeFileDiff(filePath: String) -> Bool {
+        let skippedComponents: Set = [".build", ".swiftpm", "DerivedData", "node_modules", ".git"]
+        return filePath.split(separator: "/").contains { skippedComponents.contains(String($0)) }
+    }
+
+    private static func fileSize(atPath path: String) -> Int? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        return attributes?[.size] as? Int
+    }
+
+    private static func looksBinary(_ data: Data) -> Bool {
+        data.contains(0)
     }
 
     func stageFiles(repoPath: String, paths: [String]) async throws {
