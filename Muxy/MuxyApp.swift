@@ -37,8 +37,10 @@ struct MuxyApp: App {
         let vcsWorktreeAutoRefresher = VCSWorktreeAutoRefresher(
             appState: appState,
             projectStore: projectStore,
-            worktreeStore: worktreeStore
+            worktreeStore: worktreeStore,
+            repoActivityMonitor: appState.repoActivityMonitor
         )
+        vcsWorktreeAutoRefresher.syncActiveSubscriptions()
         _appState = State(initialValue: appState)
         _projectStore = State(initialValue: projectStore)
         _worktreeStore = State(initialValue: worktreeStore)
@@ -59,8 +61,18 @@ struct MuxyApp: App {
                 .environment(ExtensionStore.shared)
                 .environment(ExtensionSettingsStore.shared)
                 .preferredColorScheme(MuxyTheme.colorScheme)
+                .onChange(of: appState.activeProjectID) {
+                    vcsWorktreeAutoRefresher.syncActiveSubscriptions()
+                }
+                .onChange(of: appState.activeWorktreeID) {
+                    vcsWorktreeAutoRefresher.syncActiveSubscriptions()
+                }
+                .onChange(of: worktreeStore.worktrees.mapValues { $0.map { "\($0.id.uuidString):\($0.path)" } }) {
+                    vcsWorktreeAutoRefresher.syncActiveSubscriptions()
+                }
                 .onAppear {
                     startDeferredServicesIfNeeded()
+                    vcsWorktreeAutoRefresher.syncActiveSubscriptions()
                     NotificationStore.shared.appState = appState
                     NotificationStore.shared.worktreeStore = worktreeStore
                     NotificationStore.shared.markAllAsRead()

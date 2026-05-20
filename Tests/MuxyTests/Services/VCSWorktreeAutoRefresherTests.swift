@@ -36,6 +36,63 @@ struct VCSWorktreeAutoRefresherTests {
         #expect(context.worktreeStore.list(for: context.project.id).count == 1)
     }
 
+    @Test("repo activity refreshes active worktree list without notification observers")
+    func repoActivityRefreshesActiveWorktreeListWithoutNotificationObservers() async throws {
+        let watcherProbe = TestRepoActivityWatcherProbe()
+        let scheduler = TestRepoActivityScheduler()
+        let monitor = RepoActivityMonitor(
+            watcherFactory: watcherProbe.makeWatcher,
+            scheduler: scheduler
+        )
+        let context = makeContext(repoActivityMonitor: monitor)
+        let primary = try #require(context.worktreeStore.primary(for: context.project.id))
+        context.appState.activeProjectID = context.project.id
+        context.appState.activeWorktreeID[context.project.id] = primary.id
+
+        context.refresher.syncActiveSubscriptions()
+
+        #expect(context.refresher.activeNotificationObserverCount == 0)
+        #expect(context.refresher.activeActivitySubscriptionCount == 1)
+        #expect(watcherProbe.createdPaths == [context.project.path])
+        #expect(monitor.activeRootCount == 1)
+
+        watcherProbe.trigger(
+            rootPath: context.project.path,
+            events: [RepoActivityEvent(path: "\(context.project.path)/.git/worktrees/feature-x/gitdir", isDirectory: false)]
+        )
+        scheduler.runAll()
+
+        await context.gitService.awaitCall(forRepoPath: context.project.path)
+        await drainMainQueue()
+        await #expect(context.gitService.callCount(forRepoPath: context.project.path) == 1)
+        #expect(context.worktreeStore.list(for: context.project.id).contains { $0.path == context.featurePath })
+    }
+
+    @Test("repo activity source changes do not refresh worktree list")
+    func repoActivitySourceChangesDoNotRefreshWorktreeList() async throws {
+        let watcherProbe = TestRepoActivityWatcherProbe()
+        let scheduler = TestRepoActivityScheduler()
+        let monitor = RepoActivityMonitor(
+            watcherFactory: watcherProbe.makeWatcher,
+            scheduler: scheduler
+        )
+        let context = makeContext(repoActivityMonitor: monitor)
+        let primary = try #require(context.worktreeStore.primary(for: context.project.id))
+        context.appState.activeProjectID = context.project.id
+        context.appState.activeWorktreeID[context.project.id] = primary.id
+
+        context.refresher.syncActiveSubscriptions()
+        watcherProbe.trigger(
+            rootPath: context.project.path,
+            events: [RepoActivityEvent(path: "\(context.project.path)/Sources/App.swift", isDirectory: false)]
+        )
+        scheduler.runAll()
+        await drainMainQueue()
+
+        await #expect(context.gitService.callCount(forRepoPath: context.project.path) == 0)
+        #expect(context.worktreeStore.list(for: context.project.id).count == 1)
+    }
+
     private func runRefresh(context: Context, notification: Notification.Name) async {
         NotificationCenter.default.post(
             name: notification,
@@ -56,7 +113,7 @@ struct VCSWorktreeAutoRefresherTests {
         }
     }
 
-    private func makeContext() -> Context {
+    private func makeContext(repoActivityMonitor: RepoActivityMonitor? = nil) -> Context {
         let suffix = UUID().uuidString
         let projectPath = "/tmp/muxy-test-repo-\(suffix)"
         let featurePath = "/tmp/muxy-test-repo-\(suffix)-feature-x"
@@ -95,7 +152,8 @@ struct VCSWorktreeAutoRefresherTests {
         let refresher = VCSWorktreeAutoRefresher(
             appState: appState,
             projectStore: projectStore,
-            worktreeStore: worktreeStore
+            worktreeStore: worktreeStore,
+            repoActivityMonitor: repoActivityMonitor
         )
         return Context(
             project: project,
