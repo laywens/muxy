@@ -18,6 +18,7 @@ struct DiagnosticsCountersTests {
         counters.recordFSEventStreamStarted()
         counters.recordFSEvents(eventCount: 7)
         counters.recordWatcherRefresh()
+        counters.setRepoActivityCounts(streams: 2, roots: 2, subscribers: 5)
         counters.recordSubprocessStarted()
         counters.recordSubprocessFinished(duration: 0.25, timedOut: true)
         counters.recordRemoteTerminalBytes(2_048)
@@ -35,6 +36,9 @@ struct DiagnosticsCountersTests {
         #expect(snapshot.fseventStreamsCreated == 1)
         #expect(snapshot.fseventEvents == 7)
         #expect(snapshot.watcherRefreshes == 1)
+        #expect(snapshot.repoActivityStreams == 2)
+        #expect(snapshot.repoActivityRoots == 2)
+        #expect(snapshot.repoActivitySubscribers == 5)
         #expect(snapshot.subprocessActive == 0)
         #expect(snapshot.subprocessStarted == 1)
         #expect(snapshot.subprocessCompleted == 1)
@@ -49,11 +53,15 @@ struct DiagnosticsCountersTests {
 
         counters.recordFSEventStreamStopped()
         counters.recordSubprocessFinished(duration: 0.1, timedOut: false)
+        counters.setRepoActivityCounts(streams: -3, roots: -1, subscribers: -2)
 
         let snapshot = counters.snapshot()
 
         #expect(snapshot.fseventStreamsActive == 0)
         #expect(snapshot.subprocessActive == 0)
+        #expect(snapshot.repoActivityStreams == 0)
+        #expect(snapshot.repoActivityRoots == 0)
+        #expect(snapshot.repoActivitySubscribers == 0)
         #expect(snapshot.fseventStreamsStopped == 1)
         #expect(snapshot.subprocessCompleted == 1)
     }
@@ -122,6 +130,9 @@ struct DiagnosticsCountersTests {
             fseventStreamsStopped: 1,
             fseventEvents: 20,
             watcherRefreshes: 8,
+            repoActivityStreams: 2,
+            repoActivityRoots: 2,
+            repoActivitySubscribers: 9,
             subprocessActive: 0,
             subprocessStarted: 7,
             subprocessCompleted: 7,
@@ -138,6 +149,7 @@ struct DiagnosticsCountersTests {
         #expect(report.contains("Surfaces: live=5 occluded=2"))
         #expect(report.contains("Branch Observers: 6"))
         #expect(report.contains("FSEvents: activeStreams=1 created=2 stopped=1 events=20 refreshes=8"))
+        #expect(report.contains("Repo Activity: streams=2 roots=2 subscribers=9"))
         #expect(report.contains("Subprocesses: active=0 started=7 completed=7 timedOut=1"))
         #expect(report.contains("Remote Streaming: outputBytes=4096"))
 
@@ -146,6 +158,9 @@ struct DiagnosticsCountersTests {
         #expect(periodic.contains("ghosttyWakeups=3"))
         #expect(periodic.contains("ghosttyTicks=4"))
         #expect(periodic.contains("occludedSurfaces=2"))
+        #expect(periodic.contains("repoActivityStreams=2"))
+        #expect(periodic.contains("repoActivityRoots=2"))
+        #expect(periodic.contains("repoActivitySubscribers=9"))
         #expect(periodic.contains("subprocessTimeouts=1"))
         #expect(periodic.contains("remoteBytes=4096"))
     }

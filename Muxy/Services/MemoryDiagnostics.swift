@@ -372,8 +372,15 @@ final class MemoryDiagnostics: NSObject {
         let viewCount = TerminalViewRegistry.shared.liveViewCount
         let leak = max(viewCount - paneCount, surfaceCount - paneCount)
         let branchObserverCount = appState?.repoBranchService.branchObserverCount ?? 0
+        let repoActivityRootCount = appState?.repoActivityMonitor.activeRootCount ?? 0
+        let repoActivitySubscriberCount = appState?.repoActivityMonitor.activeSubscriberCount ?? 0
         DiagnosticsCounters.shared.setSurfaceCounts(live: surfaceCount, occluded: occludedSurfaceCount)
         DiagnosticsCounters.shared.setBranchObserverCount(branchObserverCount)
+        DiagnosticsCounters.shared.setRepoActivityCounts(
+            streams: repoActivityRootCount,
+            roots: repoActivityRootCount,
+            subscribers: repoActivitySubscriberCount
+        )
         let counters = DiagnosticsCounters.shared.snapshot()
 
         return Metrics(
@@ -431,6 +438,9 @@ final class MemoryDiagnostics: NSObject {
             "fseventStreams=\(snapshot.fseventStreamsActive)",
             "fseventEvents=\(snapshot.fseventEvents)",
             "watcherRefreshes=\(snapshot.watcherRefreshes)",
+            "repoActivityStreams=\(snapshot.repoActivityStreams)",
+            "repoActivityRoots=\(snapshot.repoActivityRoots)",
+            "repoActivitySubscribers=\(snapshot.repoActivitySubscribers)",
             "subprocessActive=\(snapshot.subprocessActive)",
             "subprocessStarted=\(snapshot.subprocessStarted)",
             "subprocessTimeouts=\(snapshot.subprocessTimedOut)",
@@ -449,6 +459,8 @@ final class MemoryDiagnostics: NSObject {
         out += "  FSEvents: activeStreams=\(snapshot.fseventStreamsActive) "
         out += "created=\(snapshot.fseventStreamsCreated) stopped=\(snapshot.fseventStreamsStopped) "
         out += "events=\(snapshot.fseventEvents) refreshes=\(snapshot.watcherRefreshes)\n"
+        out += "  Repo Activity: streams=\(snapshot.repoActivityStreams) roots=\(snapshot.repoActivityRoots) "
+        out += "subscribers=\(snapshot.repoActivitySubscribers)\n"
         out += "  Subprocesses: active=\(snapshot.subprocessActive) "
         out += "started=\(snapshot.subprocessStarted) completed=\(snapshot.subprocessCompleted) "
         out += "timedOut=\(snapshot.subprocessTimedOut) totalDuration=\(snapshot.subprocessTotalDurationMS) ms "

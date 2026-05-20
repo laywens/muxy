@@ -38,6 +38,10 @@ final class RepoActivityMonitor {
         roots.count
     }
 
+    var activeSubscriberCount: Int {
+        roots.values.reduce(0) { $0 + $1.subscribers.count }
+    }
+
     init(
         debounceDelay: Duration = .milliseconds(300),
         watcherFactory: @escaping WatcherFactory = RepoActivityMonitor.makeFileSystemWatcher,

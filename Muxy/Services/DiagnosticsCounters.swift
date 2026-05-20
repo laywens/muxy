@@ -14,6 +14,9 @@ struct DiagnosticsCounterSnapshot: Equatable {
     let fseventStreamsStopped: Int
     let fseventEvents: Int
     let watcherRefreshes: Int
+    let repoActivityStreams: Int
+    let repoActivityRoots: Int
+    let repoActivitySubscribers: Int
     let subprocessActive: Int
     let subprocessStarted: Int
     let subprocessCompleted: Int
@@ -92,6 +95,14 @@ final class DiagnosticsCounters: @unchecked Sendable {
         }
     }
 
+    func setRepoActivityCounts(streams: Int, roots: Int, subscribers: Int) {
+        lock.withLock {
+            state.repoActivityStreams = max(0, streams)
+            state.repoActivityRoots = max(0, roots)
+            state.repoActivitySubscribers = max(0, subscribers)
+        }
+    }
+
     func recordSubprocessStarted() {
         lock.withLock {
             state.subprocessActive += 1
@@ -140,6 +151,9 @@ final class DiagnosticsCounters: @unchecked Sendable {
                 fseventStreamsStopped: state.fseventStreamsStopped,
                 fseventEvents: state.fseventEvents,
                 watcherRefreshes: state.watcherRefreshes,
+                repoActivityStreams: state.repoActivityStreams,
+                repoActivityRoots: state.repoActivityRoots,
+                repoActivitySubscribers: state.repoActivitySubscribers,
                 subprocessActive: state.subprocessActive,
                 subprocessStarted: state.subprocessStarted,
                 subprocessCompleted: state.subprocessCompleted,
@@ -175,6 +189,9 @@ final class DiagnosticsCounters: @unchecked Sendable {
         var fseventStreamsStopped = 0
         var fseventEvents = 0
         var watcherRefreshes = 0
+        var repoActivityStreams = 0
+        var repoActivityRoots = 0
+        var repoActivitySubscribers = 0
         var subprocessActive = 0
         var subprocessStarted = 0
         var subprocessCompleted = 0

@@ -27,6 +27,32 @@ struct RepoActivityMonitorTests {
         #expect(monitor.activeRootCount == 1)
     }
 
+    @Test("active subscriber count tracks shared root fan-out")
+    func activeSubscriberCountTracksSharedRootFanOut() throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let watcherProbe = RepoActivityWatcherProbe()
+        let scheduler = ManualRepoActivityScheduler()
+        let monitor = RepoActivityMonitor(
+            watcherFactory: watcherProbe.makeWatcher,
+            scheduler: scheduler
+        )
+
+        let first = try #require(monitor.subscribe(watchPath: root.path) { _ in })
+        let second = try #require(monitor.subscribe(watchPath: root.appendingPathComponent(".").path) { _ in })
+
+        #expect(monitor.activeRootCount == 1)
+        #expect(monitor.activeSubscriberCount == 2)
+
+        first.cancel()
+        #expect(monitor.activeRootCount == 1)
+        #expect(monitor.activeSubscriberCount == 1)
+
+        second.cancel()
+        #expect(monitor.activeRootCount == 0)
+        #expect(monitor.activeSubscriberCount == 0)
+    }
+
     @Test("fans out debounced activity to every subscriber")
     func fansOutDebouncedActivityToEverySubscriber() throws {
         let root = try makeTempDirectory()
