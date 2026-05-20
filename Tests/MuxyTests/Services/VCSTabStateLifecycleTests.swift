@@ -6,6 +6,41 @@ import Testing
 @Suite("VCSTabState lifecycle", .serialized)
 @MainActor
 struct VCSTabStateLifecycleTests {
+    @Test("active states share injected repo activity monitor watcher")
+    func activeStatesShareInjectedRepoActivityMonitorWatcher() throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let watcherProbe = TestRepoActivityWatcherProbe()
+        let monitor = RepoActivityMonitor(watcherFactory: watcherProbe.makeWatcher)
+        let first = VCSTabState(
+            projectPath: root.path,
+            activityMonitor: monitor,
+            notificationCenter: NotificationCenter()
+        )
+        let second = VCSTabState(
+            projectPath: root.appendingPathComponent(".").path,
+            activityMonitor: monitor,
+            notificationCenter: NotificationCenter()
+        )
+
+        first.activate(reason: .visibleTab)
+        second.activate(reason: .attachedPanel)
+
+        #expect(watcherProbe.createdPaths == [root.path])
+        #expect(watcherProbe.liveCount == 1)
+        #expect(monitor.activeRootCount == 1)
+
+        first.deactivate(reason: .visibleTab)
+
+        #expect(watcherProbe.liveCount == 1)
+        #expect(monitor.activeRootCount == 1)
+
+        second.deactivate(reason: .attachedPanel)
+
+        #expect(watcherProbe.liveCount == 0)
+        #expect(monitor.activeRootCount == 0)
+    }
+
     @Test("new state does not install watcher until activated")
     func newStateDoesNotInstallWatcherUntilActivated() {
         let counter = WatcherCounter()
@@ -131,6 +166,13 @@ struct VCSTabStateLifecycleTests {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("muxy-vcs-lifecycle-\(UUID().uuidString)", isDirectory: true)
             .path
+    }
+
+    private func makeTempDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muxy-vcs-lifecycle-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 }
 

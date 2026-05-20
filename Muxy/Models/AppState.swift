@@ -120,6 +120,7 @@ final class AppState {
         self.terminalSessions = terminalSessions
         self.repoBranchService = repoBranchService
         self.repoActivityMonitor = repoActivityMonitor
+        VCSStateStore.shared.configure(activityMonitor: repoActivityMonitor)
     }
 
     func restoreSelection(projects: [Project], worktrees: [UUID: [Worktree]]) {

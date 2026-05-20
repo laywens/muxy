@@ -199,7 +199,7 @@ final class VCSTabState {
     }
 
     @ObservationIgnored private let git = GitRepositoryService()
-    @ObservationIgnored private let watcherFactory: WatcherFactory
+    @ObservationIgnored private let activityMonitor: RepoActivityMonitor
     @ObservationIgnored private let notificationCenter: NotificationCenter
     @ObservationIgnored private let autoSyncNanosecondsPerMinute: UInt64
     @ObservationIgnored private let pullRequestAutoSyncAction: @MainActor (VCSTabState) -> Void
@@ -211,7 +211,7 @@ final class VCSTabState {
     @ObservationIgnored private var prListTask: Task<Void, Never>?
     @ObservationIgnored private var prAutoSyncTask: Task<Void, Never>?
     @ObservationIgnored private var aiGenerationTask: Task<Void, Never>?
-    @ObservationIgnored private var watcher: (any FileSystemWatching)?
+    @ObservationIgnored private var activitySubscription: RepoActivitySubscription?
     @ObservationIgnored nonisolated(unsafe) private var remoteChangeObserver: NSObjectProtocol?
     @ObservationIgnored private var isRefreshing = false
     @ObservationIgnored private var pendingRefresh = false
@@ -232,6 +232,7 @@ final class VCSTabState {
         watcherFactory: @escaping WatcherFactory = { directoryPath, handler in
             FileSystemWatcher(directoryPath: directoryPath, handler: handler)
         },
+        activityMonitor: RepoActivityMonitor? = nil,
         notificationCenter: NotificationCenter = .default,
         autoSyncNanosecondsPerMinute: UInt64 = 60 * 1_000_000_000,
         pullRequestAutoSyncAction: @escaping @MainActor (VCSTabState) -> Void = { state in
@@ -239,7 +240,7 @@ final class VCSTabState {
         }
     ) {
         self.projectPath = projectPath
-        self.watcherFactory = watcherFactory
+        self.activityMonitor = activityMonitor ?? Self.makeActivityMonitor(watcherFactory: watcherFactory)
         self.notificationCenter = notificationCenter
         self.autoSyncNanosecondsPerMinute = autoSyncNanosecondsPerMinute
         self.pullRequestAutoSyncAction = pullRequestAutoSyncAction
@@ -297,7 +298,8 @@ final class VCSTabState {
         }
         activationCounts.removeValue(forKey: reason)
         guard activationCounts.isEmpty else { return }
-        watcher = nil
+        activitySubscription?.cancel()
+        activitySubscription = nil
         stopObservingRemoteChanges()
         cancelLifecycleTasksForDeactivation()
     }
@@ -331,12 +333,23 @@ final class VCSTabState {
     }
 
     private func startWatching() {
-        guard watcher == nil else { return }
-        watcher = watcherFactory(projectPath) { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.watcherDidFire()
-            }
+        guard activitySubscription == nil else { return }
+        activitySubscription = activityMonitor.subscribe(
+            watchPath: projectPath,
+            repoPath: projectPath
+        ) { [weak self] _ in
+            self?.watcherDidFire()
         }
+    }
+
+    private static func makeActivityMonitor(watcherFactory: @escaping WatcherFactory) -> RepoActivityMonitor {
+        RepoActivityMonitor(watcherFactory: { watchPath, handler in
+            watcherFactory(watchPath) {
+                Task { @MainActor in
+                    handler([RepoActivityEvent(path: watchPath, isDirectory: true)])
+                }
+            }
+        })
     }
 
     private func observeRemoteChanges() {

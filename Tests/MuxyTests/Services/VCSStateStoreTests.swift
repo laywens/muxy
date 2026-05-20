@@ -6,6 +6,27 @@ import Testing
 @Suite("VCSStateStore")
 @MainActor
 struct VCSStateStoreTests {
+    @Test("creates states with injected repo activity monitor")
+    func createsStatesWithInjectedRepoActivityMonitor() throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let watcherProbe = TestRepoActivityWatcherProbe()
+        let monitor = RepoActivityMonitor(watcherFactory: watcherProbe.makeWatcher)
+        let store = VCSStateStore(activityMonitor: monitor)
+
+        let state = store.state(for: root.path)
+        state.activate(reason: .visibleTab)
+
+        #expect(watcherProbe.createdPaths == [root.path])
+        #expect(watcherProbe.liveCount == 1)
+        #expect(monitor.activeRootCount == 1)
+
+        state.deactivate(reason: .visibleTab)
+
+        #expect(watcherProbe.liveCount == 0)
+        #expect(monitor.activeRootCount == 0)
+    }
+
     @Test("Returns the same instance for the same path")
     func returnsSameInstanceForSamePath() {
         let store = VCSStateStore.shared
@@ -54,5 +75,12 @@ struct VCSStateStoreTests {
         #expect(store.cachedState(for: path) == nil)
         _ = store.state(for: path)
         #expect(store.cachedState(for: path) != nil)
+    }
+
+    private func makeTempDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muxy-vcs-store-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 }

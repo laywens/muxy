@@ -5,14 +5,21 @@ import Foundation
 final class VCSStateStore {
     static let shared = VCSStateStore()
 
+    @ObservationIgnored private var activityMonitor: RepoActivityMonitor
     private(set) var states: [String: VCSTabState] = [:]
 
-    private init() {}
+    init(activityMonitor: RepoActivityMonitor = RepoActivityMonitor()) {
+        self.activityMonitor = activityMonitor
+    }
+
+    func configure(activityMonitor: RepoActivityMonitor) {
+        self.activityMonitor = activityMonitor
+    }
 
     func state(for path: String) -> VCSTabState {
         let key = Self.canonicalize(path)
         if let existing = states[key] { return existing }
-        let state = VCSTabState(projectPath: path)
+        let state = VCSTabState(projectPath: path, activityMonitor: activityMonitor)
         states[key] = state
         return state
     }
