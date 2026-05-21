@@ -77,6 +77,7 @@ Notes:
 
 ```json
 {
+  "protocolVersion": 1,
   "type": "request",
   "payload": {
     "id": "1",
@@ -92,3 +93,7 @@ Notes:
   }
 }
 ```
+
+If `protocolVersion` is omitted, the server treats the envelope as protocol
+version `1`. Successful `pairing` and `deviceInfo` handshake responses include
+`acceptedVersions`; the current accepted set is `[1]`.

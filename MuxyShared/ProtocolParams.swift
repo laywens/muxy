@@ -154,12 +154,41 @@ public struct PairingResultDTO: Codable, Sendable {
     public let themeFg: UInt32?
     public let themeBg: UInt32?
     public let themePalette: [UInt32]?
-    public init(clientID: UUID, deviceName: String, themeFg: UInt32? = nil, themeBg: UInt32? = nil, themePalette: [UInt32]? = nil) {
+    public let acceptedVersions: [Int]
+
+    private enum CodingKeys: String, CodingKey {
+        case clientID
+        case deviceName
+        case themeFg
+        case themeBg
+        case themePalette
+        case acceptedVersions
+    }
+
+    public init(
+        clientID: UUID,
+        deviceName: String,
+        themeFg: UInt32? = nil,
+        themeBg: UInt32? = nil,
+        themePalette: [UInt32]? = nil,
+        acceptedVersions: [Int] = MuxyProtocolVersion.accepted
+    ) {
         self.clientID = clientID
         self.deviceName = deviceName
         self.themeFg = themeFg
         self.themeBg = themeBg
         self.themePalette = themePalette
+        self.acceptedVersions = acceptedVersions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        clientID = try container.decode(UUID.self, forKey: .clientID)
+        deviceName = try container.decode(String.self, forKey: .deviceName)
+        themeFg = try container.decodeIfPresent(UInt32.self, forKey: .themeFg)
+        themeBg = try container.decodeIfPresent(UInt32.self, forKey: .themeBg)
+        themePalette = try container.decodeIfPresent([UInt32].self, forKey: .themePalette)
+        acceptedVersions = try container.decodeIfPresent([Int].self, forKey: .acceptedVersions) ?? MuxyProtocolVersion.accepted
     }
 }
 
@@ -169,12 +198,41 @@ public struct DeviceInfoDTO: Codable, Sendable {
     public let themeFg: UInt32?
     public let themeBg: UInt32?
     public let themePalette: [UInt32]?
-    public init(clientID: UUID, deviceName: String, themeFg: UInt32? = nil, themeBg: UInt32? = nil, themePalette: [UInt32]? = nil) {
+    public let acceptedVersions: [Int]
+
+    private enum CodingKeys: String, CodingKey {
+        case clientID
+        case deviceName
+        case themeFg
+        case themeBg
+        case themePalette
+        case acceptedVersions
+    }
+
+    public init(
+        clientID: UUID,
+        deviceName: String,
+        themeFg: UInt32? = nil,
+        themeBg: UInt32? = nil,
+        themePalette: [UInt32]? = nil,
+        acceptedVersions: [Int] = MuxyProtocolVersion.accepted
+    ) {
         self.clientID = clientID
         self.deviceName = deviceName
         self.themeFg = themeFg
         self.themeBg = themeBg
         self.themePalette = themePalette
+        self.acceptedVersions = acceptedVersions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        clientID = try container.decode(UUID.self, forKey: .clientID)
+        deviceName = try container.decode(String.self, forKey: .deviceName)
+        themeFg = try container.decodeIfPresent(UInt32.self, forKey: .themeFg)
+        themeBg = try container.decodeIfPresent(UInt32.self, forKey: .themeBg)
+        themePalette = try container.decodeIfPresent([UInt32].self, forKey: .themePalette)
+        acceptedVersions = try container.decodeIfPresent([Int].self, forKey: .acceptedVersions) ?? MuxyProtocolVersion.accepted
     }
 }
 

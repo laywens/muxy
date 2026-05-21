@@ -16,7 +16,7 @@ flowchart TB
   Lifecycle --> Settings[Mobile settings UI]
 ```
 
-The server uses Apple's Network framework (`NWListener` + `NWConnection`) with the WebSocket protocol. All messages use the `MuxyMessage` JSON envelope from `MuxyShared`. The user-configurable port (default 4865) is stored in `UserDefaults` and applied on start. `MobileServerService` reports bind failures back to the UI: if the listener fails (e.g. port in use), the enable toggle is rolled off and the settings view displays the error.
+The server uses Apple's Network framework (`NWListener` + `NWConnection`) with the WebSocket protocol. All messages use the `MuxyMessage` JSON envelope from `MuxyShared`; the envelope carries `protocolVersion`, defaulting to v1 for older clients that omit the field. The user-configurable port (default 4865) is stored in `UserDefaults` and applied on start. `MobileServerService` reports bind failures back to the UI: if the listener fails (e.g. port in use), the enable toggle is rolled off and the settings view displays the error.
 
 ## Pairing handshake
 
@@ -55,6 +55,10 @@ sequenceDiagram
 After success, the client is added to an `authenticatedClients` set on `MuxyRemoteServer`; broadcasts only go to clients in that set. Until the handshake succeeds the server rejects every other RPC with `401`. The `Mobile` tab in Settings lists approved devices with a Revoke action; revoke removes the device from `approved-devices.json` and terminates active connections via `MuxyRemoteServer.disconnect(deviceID:)`.
 
 A token mismatch is treated the same as unknown (returns `401`) so a stolen but outdated credential can't resume authentication.
+
+Successful `pairing` and `deviceInfo` handshake responses advertise
+`acceptedVersions`. The current server accepts `[1]`. Future protocol-breaking
+work should ship v1+v2 acceptance for one minor release before removing v1.
 
 ## Terminal I/O streaming
 

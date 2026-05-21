@@ -331,6 +331,54 @@ struct MuxyRemoteServerRoutingTests {
         #expect(info.deviceName == "iPhone")
     }
 
+    @Test("registerDevice advertises accepted protocol versions")
+    func registerDeviceAdvertisesAcceptedVersions() async {
+        let (server, delegate) = makeServer()
+        _ = delegate
+
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "proto",
+                method: .registerDevice,
+                params: .registerDevice(RegisterDeviceParams(deviceName: "iPhone"))
+            ),
+            clientID: authedClient(on: server)
+        )
+
+        guard case let .deviceInfo(info) = response.result else {
+            Issue.record("expected deviceInfo")
+            return
+        }
+        #expect(info.acceptedVersions == [1])
+    }
+
+    @Test("authenticateDevice advertises accepted protocol versions")
+    func authenticateDeviceAdvertisesAcceptedVersions() async {
+        let (server, delegate) = makeServer()
+        _ = delegate
+        let clientID = UUID()
+        let deviceID = UUID()
+
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "auth-proto",
+                method: .authenticateDevice,
+                params: .authenticateDevice(AuthenticateDeviceParams(
+                    deviceID: deviceID,
+                    deviceName: "iPhone",
+                    token: "token"
+                ))
+            ),
+            clientID: clientID
+        )
+
+        guard case let .pairing(result) = response.result else {
+            Issue.record("expected pairing result")
+            return
+        }
+        #expect(result.acceptedVersions == [1])
+    }
+
     @Test("getWorkspace returns notFound when delegate has no workspace")
     func getWorkspaceNotFound() async {
         let (server, delegate) = makeServer()

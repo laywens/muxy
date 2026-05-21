@@ -6,6 +6,16 @@ Each client should generate and persist:
 - `deviceName` — a user-friendly label
 - `token` — a random secret persisted securely on the client
 
+## Protocol versioning
+
+Every top-level `MuxyMessage` envelope includes `protocolVersion`. If the field
+is absent, the server treats the message as protocol version `1`.
+
+The current server accepts version `1`. Successful handshake responses advertise
+the accepted set through `acceptedVersions` so clients can coordinate future
+protocol migrations. When a v2 protocol lands, v1 and v2 should both be accepted
+for one minor release before the v1 deprecation window closes.
+
 ## Connection flow
 
 ```mermaid
@@ -56,6 +66,7 @@ Success result:
   "value": {
     "clientID": "62ea9d06-a1f4-4a11-9f39-33ee322f6573",
     "deviceName": "Pixel 9",
+    "acceptedVersions": [1],
     "themeFg": 16777215,
     "themeBg": 197379,
     "themePalette": [0, 16711680, 65280]
@@ -64,6 +75,7 @@ Success result:
 ```
 
 `themeFg`, `themeBg`, and `themePalette` are optional and may be omitted.
+`acceptedVersions` defaults to `[1]` when omitted by older servers.
 
 ## `pairDevice`
 

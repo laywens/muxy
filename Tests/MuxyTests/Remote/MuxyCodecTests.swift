@@ -4,6 +4,59 @@ import Testing
 
 @Suite("MuxyCodec")
 struct MuxyCodecTests {
+    @Test("legacy envelope without protocolVersion decodes as v1")
+    func legacyEnvelopeDefaultsToProtocolV1() throws {
+        let json = #"{"type":"request","payload":{"id":"legacy","method":"listProjects"}}"#
+
+        let decoded = try MuxyCodec.decode(Data(json.utf8))
+
+        #expect(decoded.protocolVersion == 1)
+        guard case let .request(request, protocolVersion) = decoded else {
+            Issue.record("expected request")
+            return
+        }
+        #expect(protocolVersion == 1)
+        #expect(request.id == "legacy")
+    }
+
+    @Test("encoded envelope includes protocolVersion")
+    func encodedEnvelopeIncludesProtocolVersion() throws {
+        let data = try MuxyCodec.encode(.request(MuxyRequest(id: "v", method: .listProjects)))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(object["protocolVersion"] as? Int == 1)
+    }
+
+    @Test("explicit future protocolVersion round trips")
+    func explicitFutureProtocolVersionRoundTrips() throws {
+        let json = #"{"protocolVersion":2,"type":"request","payload":{"id":"future","method":"listProjects"}}"#
+
+        let decoded = try MuxyCodec.decode(Data(json.utf8))
+        let reencoded = try MuxyCodec.encode(decoded)
+        let object = try #require(JSONSerialization.jsonObject(with: reencoded) as? [String: Any])
+
+        #expect(decoded.protocolVersion == 2)
+        #expect(object["protocolVersion"] as? Int == 2)
+    }
+
+    @Test("pairing result defaults acceptedVersions for legacy payloads")
+    func pairingResultDefaultsAcceptedVersions() throws {
+        let json = #"{"clientID":"00000000-0000-0000-0000-000000000001","deviceName":"iPhone"}"#
+
+        let result = try JSONDecoder().decode(PairingResultDTO.self, from: Data(json.utf8))
+
+        #expect(result.acceptedVersions == [1])
+    }
+
+    @Test("device info defaults acceptedVersions for legacy payloads")
+    func deviceInfoDefaultsAcceptedVersions() throws {
+        let json = #"{"clientID":"00000000-0000-0000-0000-000000000001","deviceName":"iPhone"}"#
+
+        let result = try JSONDecoder().decode(DeviceInfoDTO.self, from: Data(json.utf8))
+
+        #expect(result.acceptedVersions == [1])
+    }
+
     @Test("request round-trip preserves id, method and params")
     func requestRoundTrip() throws {
         let projectID = UUID()
@@ -18,7 +71,7 @@ struct MuxyCodecTests {
         let data = try MuxyCodec.encode(original)
         let decoded = try MuxyCodec.decode(data)
 
-        guard case let .request(request) = decoded else {
+        guard case let .request(request, _) = decoded else {
             Issue.record("expected .request case, got \(decoded)")
             return
         }
@@ -37,7 +90,7 @@ struct MuxyCodecTests {
         let data = try MuxyCodec.encode(original)
         let decoded = try MuxyCodec.decode(data)
 
-        guard case let .response(response) = decoded else {
+        guard case let .response(response, _) = decoded else {
             Issue.record("expected .response case")
             return
         }
@@ -57,7 +110,7 @@ struct MuxyCodecTests {
         let data = try MuxyCodec.encode(original)
         let decoded = try MuxyCodec.decode(data)
 
-        guard case let .response(response) = decoded,
+        guard case let .response(response, _) = decoded,
               let error = response.error
         else {
             Issue.record("expected response with error")
@@ -86,7 +139,7 @@ struct MuxyCodecTests {
         let data = try MuxyCodec.encode(original)
         let decoded = try MuxyCodec.decode(data)
 
-        guard case let .event(event) = decoded,
+        guard case let .event(event, _) = decoded,
               case let .paneOwnership(dto) = event.data
         else {
             Issue.record("expected pane ownership event")
@@ -127,7 +180,7 @@ struct MuxyCodecTests {
         let data = try MuxyCodec.encode(.response(MuxyResponse(id: "c1", result: .terminalCells(payload))))
         let decoded = try MuxyCodec.decode(data)
 
-        guard case let .response(response) = decoded,
+        guard case let .response(response, _) = decoded,
               case let .terminalCells(roundTripped) = response.result
         else {
             Issue.record("expected terminalCells response")

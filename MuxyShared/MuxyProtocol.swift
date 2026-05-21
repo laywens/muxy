@@ -6,6 +6,12 @@ public enum MuxyMessageType: String, Codable, Sendable {
     case event
 }
 
+public enum MuxyProtocolVersion {
+    public static let legacy = 1
+    public static let current = 1
+    public static let accepted = [current]
+}
+
 public struct MuxyRequest: Codable, Sendable {
     public let id: String
     public let method: MuxyMethod
