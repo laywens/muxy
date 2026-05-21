@@ -37,6 +37,25 @@ struct MobilePairingURITests {
         #expect(labelItem?.value == "Saeed's Mac")
     }
 
+    @Test("includes secure transport metadata and certificate fingerprint")
+    func includesSecureTransportMetadata() throws {
+        let fingerprint = String(repeating: "a", count: 64)
+        let uri = try #require(MobilePairingURI.makeString(
+            host: "host.local",
+            port: 4865,
+            service: nil,
+            label: nil,
+            certificateFingerprint: fingerprint,
+            protocolVersion: 2
+        ))
+        let components = try #require(URLComponents(string: uri))
+        let items = components.queryItems ?? []
+
+        #expect(items.contains(URLQueryItem(name: "transport", value: "wss")))
+        #expect(items.contains(URLQueryItem(name: "protocolVersion", value: "2")))
+        #expect(items.contains(URLQueryItem(name: "certFingerprint", value: fingerprint)))
+    }
+
     @Test("omits empty service and label")
     func omitsEmptyOptionals() throws {
         let uri = try #require(MobilePairingURI.makeString(

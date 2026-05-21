@@ -137,14 +137,59 @@ public struct PairDeviceParams: Codable, Sendable {
     }
 }
 
+public struct BeginAuthenticationParams: Codable, Sendable {
+    public let deviceID: UUID
+    public let deviceName: String
+    public let deviceFingerprint: String
+
+    public init(deviceID: UUID, deviceName: String, deviceFingerprint: String) {
+        self.deviceID = deviceID
+        self.deviceName = deviceName
+        self.deviceFingerprint = deviceFingerprint
+    }
+}
+
 public struct AuthenticateDeviceParams: Codable, Sendable {
     public let deviceID: UUID
     public let deviceName: String
-    public let token: String
-    public init(deviceID: UUID, deviceName: String, token: String) {
+    public let token: String?
+    public let challengeID: String?
+    public let response: String?
+    public let deviceFingerprint: String?
+
+    public init(
+        deviceID: UUID,
+        deviceName: String,
+        token: String? = nil,
+        challengeID: String? = nil,
+        response: String? = nil,
+        deviceFingerprint: String? = nil
+    ) {
         self.deviceID = deviceID
         self.deviceName = deviceName
         self.token = token
+        self.challengeID = challengeID
+        self.response = response
+        self.deviceFingerprint = deviceFingerprint
+    }
+}
+
+public struct AuthChallengeDTO: Codable, Sendable {
+    public let challengeID: String
+    public let nonce: String
+    public let serverTimestamp: Int64
+    public let acceptedVersions: [Int]
+
+    public init(
+        challengeID: String,
+        nonce: String,
+        serverTimestamp: Int64,
+        acceptedVersions: [Int] = MuxyProtocolVersion.accepted
+    ) {
+        self.challengeID = challengeID
+        self.nonce = nonce
+        self.serverTimestamp = serverTimestamp
+        self.acceptedVersions = acceptedVersions
     }
 }
 
@@ -155,6 +200,7 @@ public struct PairingResultDTO: Codable, Sendable {
     public let themeBg: UInt32?
     public let themePalette: [UInt32]?
     public let acceptedVersions: [Int]
+    public let sessionToken: String?
 
     private enum CodingKeys: String, CodingKey {
         case clientID
@@ -163,6 +209,7 @@ public struct PairingResultDTO: Codable, Sendable {
         case themeBg
         case themePalette
         case acceptedVersions
+        case sessionToken
     }
 
     public init(
@@ -171,7 +218,8 @@ public struct PairingResultDTO: Codable, Sendable {
         themeFg: UInt32? = nil,
         themeBg: UInt32? = nil,
         themePalette: [UInt32]? = nil,
-        acceptedVersions: [Int] = MuxyProtocolVersion.accepted
+        acceptedVersions: [Int] = MuxyProtocolVersion.accepted,
+        sessionToken: String? = nil
     ) {
         self.clientID = clientID
         self.deviceName = deviceName
@@ -179,6 +227,7 @@ public struct PairingResultDTO: Codable, Sendable {
         self.themeBg = themeBg
         self.themePalette = themePalette
         self.acceptedVersions = acceptedVersions
+        self.sessionToken = sessionToken
     }
 
     public init(from decoder: Decoder) throws {
@@ -189,6 +238,7 @@ public struct PairingResultDTO: Codable, Sendable {
         themeBg = try container.decodeIfPresent(UInt32.self, forKey: .themeBg)
         themePalette = try container.decodeIfPresent([UInt32].self, forKey: .themePalette)
         acceptedVersions = try container.decodeIfPresent([Int].self, forKey: .acceptedVersions) ?? MuxyProtocolVersion.accepted
+        sessionToken = try container.decodeIfPresent(String.self, forKey: .sessionToken)
     }
 }
 

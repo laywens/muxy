@@ -37,6 +37,7 @@ private final class MockDelegate: MuxyRemoteServerDelegate {
     var stubVCSBranches = VCSBranchesDTO(current: "main", locals: ["main"], defaultBranch: "main")
     var stubCreatePRResult = VCSCreatePRResultDTO(url: "https://example.com", number: 42)
     var stubAddedWorktree = WorktreeDTO(id: UUID(), name: "wt", path: "/tmp/wt", isPrimary: false, createdAt: Date())
+    var challengeDecision: DeviceAuthDecision = .approved(deviceName: "iPhone")
 
     func listProjects() -> [ProjectDTO] {
         listProjectsCalled += 1
@@ -79,6 +80,10 @@ private final class MockDelegate: MuxyRemoteServerDelegate {
 
     func authenticateDevice(deviceID _: UUID, token _: String, name: String) -> DeviceAuthDecision {
         .approved(deviceName: name)
+    }
+
+    func authenticateDeviceChallenge(_: DeviceChallengeAuthRequest) -> DeviceAuthDecision {
+        challengeDecision
     }
 
     func requestPairing(deviceID _: UUID, token _: String, name: String) async -> DeviceAuthDecision {
@@ -186,6 +191,8 @@ private final class MockDelegate: MuxyRemoteServerDelegate {
 @Suite("MuxyRemoteServer routing")
 @MainActor
 struct MuxyRemoteServerRoutingTests {
+    private static let testSessionToken = "test-session-token"
+
     private func makeServer() -> (MuxyRemoteServer, MockDelegate) {
         let server = MuxyRemoteServer()
         let delegate = MockDelegate()
@@ -195,8 +202,33 @@ struct MuxyRemoteServerRoutingTests {
 
     private func authedClient(on server: MuxyRemoteServer) -> UUID {
         let id = UUID()
-        server._testingMarkAuthenticated(id)
+        server._testingMarkAuthenticated(id, sessionToken: Self.testSessionToken)
         return id
+    }
+
+    @Test("server start fails without TLS identity provider")
+    func startFailsWithoutTLSIdentityProvider() async {
+        let server = MuxyRemoteServer(port: 0)
+
+        let result = await withCheckedContinuation { continuation in
+            server.start { result in
+                continuation.resume(returning: result)
+            }
+        }
+
+        if case .success = result {
+            await withCheckedContinuation { continuation in
+                server.stop {
+                    continuation.resume()
+                }
+            }
+        }
+
+        guard case let .failure(error) = result else {
+            Issue.record("expected missing TLS identity failure")
+            return
+        }
+        #expect(error.localizedDescription.contains("TLS identity"))
     }
 
     @Test("listProjects routes to delegate and returns projects")
@@ -214,7 +246,7 @@ struct MuxyRemoteServerRoutingTests {
         delegate.stubProjects = [project]
 
         let response = await server.processRequest(
-            MuxyRequest(id: "1", method: .listProjects),
+            MuxyRequest(id: "1", method: .listProjects, sessionToken: Self.testSessionToken),
             clientID: authedClient(on: server)
         )
 
@@ -237,7 +269,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "2",
                 method: .selectProject,
-                params: .selectProject(SelectProjectParams(projectID: projectID))
+                params: .selectProject(SelectProjectParams(projectID: projectID)),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )
@@ -254,7 +287,7 @@ struct MuxyRemoteServerRoutingTests {
         let (server, delegate) = makeServer()
 
         let response = await server.processRequest(
-            MuxyRequest(id: "3", method: .selectProject, params: nil),
+            MuxyRequest(id: "3", method: .selectProject, params: nil, sessionToken: Self.testSessionToken),
             clientID: authedClient(on: server)
         )
 
@@ -273,9 +306,11 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "4",
                 method: .terminalInput,
-                params: .terminalInput(TerminalInputParams(paneID: paneID, bytes: Data("hello".utf8)))
+                params: .terminalInput(TerminalInputParams(paneID: paneID, bytes: Data("hello".utf8))),
+                sessionToken: Self.testSessionToken
             ),
-            clientID: clientID
+            clientID: clientID,
+            protocolVersion: 1
         )
 
         #expect(delegate.terminalInputCalls.count == 1)
@@ -294,9 +329,11 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "5",
                 method: .takeOverPane,
-                params: .takeOverPane(TakeOverPaneParams(paneID: paneID, cols: 80, rows: 24))
+                params: .takeOverPane(TakeOverPaneParams(paneID: paneID, cols: 80, rows: 24)),
+                sessionToken: Self.testSessionToken
             ),
-            clientID: clientID
+            clientID: clientID,
+            protocolVersion: 1
         )
 
         #expect(delegate.takeOverCalls.count == 1)
@@ -316,7 +353,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "6",
                 method: .registerDevice,
-                params: .registerDevice(RegisterDeviceParams(deviceName: "iPhone"))
+                params: .registerDevice(RegisterDeviceParams(deviceName: "iPhone")),
+                sessionToken: Self.testSessionToken
             ),
             clientID: clientID
         )
@@ -340,7 +378,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "proto",
                 method: .registerDevice,
-                params: .registerDevice(RegisterDeviceParams(deviceName: "iPhone"))
+                params: .registerDevice(RegisterDeviceParams(deviceName: "iPhone")),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )
@@ -349,7 +388,7 @@ struct MuxyRemoteServerRoutingTests {
             Issue.record("expected deviceInfo")
             return
         }
-        #expect(info.acceptedVersions == [1])
+        #expect(info.acceptedVersions == [1, 2])
     }
 
     @Test("authenticateDevice advertises accepted protocol versions")
@@ -369,6 +408,130 @@ struct MuxyRemoteServerRoutingTests {
                     token: "token"
                 ))
             ),
+            clientID: clientID,
+            protocolVersion: 1
+        )
+
+        guard case let .pairing(result) = response.result else {
+            Issue.record("expected pairing result")
+            return
+        }
+        #expect(result.acceptedVersions == [1, 2])
+    }
+
+    @Test("legacy token auth returns session token during deprecation window")
+    func legacyTokenAuthReturnsSessionToken() async {
+        let (server, delegate) = makeServer()
+        _ = delegate
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "legacy-auth",
+                method: .authenticateDevice,
+                params: .authenticateDevice(AuthenticateDeviceParams(
+                    deviceID: UUID(),
+                    deviceName: "iPhone",
+                    token: "token"
+                ))
+            ),
+            clientID: UUID(),
+            protocolVersion: 1
+        )
+
+        guard case let .pairing(result) = response.result else {
+            Issue.record("expected pairing result")
+            return
+        }
+        #expect(result.acceptedVersions == [1, 2])
+        #expect(result.sessionToken?.count == 64)
+    }
+
+    @Test("v2 token-only auth is invalid params")
+    func tokenOnlyV2AuthIsInvalidParams() async {
+        let (server, delegate) = makeServer()
+        _ = delegate
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "v2-token-only",
+                method: .authenticateDevice,
+                params: .authenticateDevice(AuthenticateDeviceParams(
+                    deviceID: UUID(),
+                    deviceName: "iPhone",
+                    token: "token"
+                ))
+            ),
+            clientID: UUID(),
+            protocolVersion: 2
+        )
+
+        #expect(response.error?.code == 400)
+        #expect(response.result == nil)
+    }
+
+    @Test("beginAuthentication returns challenge without authenticating client")
+    func beginAuthenticationReturnsChallenge() async {
+        let (server, delegate) = makeServer()
+        _ = delegate
+        let deviceID = UUID()
+
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "begin",
+                method: .beginAuthentication,
+                params: .beginAuthentication(BeginAuthenticationParams(
+                    deviceID: deviceID,
+                    deviceName: "iPhone",
+                    deviceFingerprint: "device-fp"
+                ))
+            ),
+            clientID: UUID()
+        )
+
+        guard case let .authChallenge(challenge) = response.result else {
+            Issue.record("expected auth challenge, got error \(String(describing: response.error))")
+            return
+        }
+        #expect(challenge.challengeID.count >= 32)
+        #expect(challenge.nonce.count == 32)
+        #expect(challenge.acceptedVersions == [1, 2])
+    }
+
+    @Test("valid v2 challenge auth returns session token")
+    func validChallengeAuthReturnsSessionToken() async {
+        let (server, delegate) = makeServer()
+        let clientID = UUID()
+        let deviceID = UUID()
+        delegate.challengeDecision = .approved(deviceName: "iPhone")
+
+        let begin = await server.processRequest(
+            MuxyRequest(
+                id: "begin",
+                method: .beginAuthentication,
+                params: .beginAuthentication(BeginAuthenticationParams(
+                    deviceID: deviceID,
+                    deviceName: "iPhone",
+                    deviceFingerprint: "device-fp"
+                ))
+            ),
+            clientID: clientID
+        )
+
+        guard case let .authChallenge(challenge) = begin.result else {
+            Issue.record("expected challenge")
+            return
+        }
+
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "auth",
+                method: .authenticateDevice,
+                params: .authenticateDevice(AuthenticateDeviceParams(
+                    deviceID: deviceID,
+                    deviceName: "iPhone",
+                    challengeID: challenge.challengeID,
+                    response: "valid-response",
+                    deviceFingerprint: "device-fp"
+                ))
+            ),
             clientID: clientID
         )
 
@@ -376,7 +539,31 @@ struct MuxyRemoteServerRoutingTests {
             Issue.record("expected pairing result")
             return
         }
-        #expect(result.acceptedVersions == [1])
+        #expect(result.sessionToken?.count == 64)
+    }
+
+    @Test("non-auth request requires matching session token")
+    func nonAuthRequestRequiresSessionToken() async {
+        let (server, delegate) = makeServer()
+        let clientID = UUID()
+        server._testingMarkAuthenticated(clientID, sessionToken: "known-token")
+        _ = delegate
+
+        let missing = await server.processRequest(
+            MuxyRequest(id: "missing", method: .listProjects),
+            clientID: clientID
+        )
+
+        let valid = await server.processRequest(
+            MuxyRequest(id: "valid", method: .listProjects, sessionToken: "known-token"),
+            clientID: clientID
+        )
+
+        #expect(missing.error?.code == 401)
+        guard case .projects = valid.result else {
+            Issue.record("expected authorized projects")
+            return
+        }
     }
 
     @Test("getWorkspace returns notFound when delegate has no workspace")
@@ -387,7 +574,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "7",
                 method: .getWorkspace,
-                params: .getWorkspace(GetWorkspaceParams(projectID: UUID()))
+                params: .getWorkspace(GetWorkspaceParams(projectID: UUID())),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )
@@ -409,7 +597,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "8",
                 method: .vcsCommit,
-                params: .vcsCommit(VCSCommitParams(projectID: UUID(), message: "msg", stageAll: true))
+                params: .vcsCommit(VCSCommitParams(projectID: UUID(), message: "msg", stageAll: true)),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )
@@ -427,7 +616,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "8a",
                 method: .vcsStageFiles,
-                params: .vcsStageFiles(VCSStageFilesParams(projectID: projectID, paths: ["a.swift", "b.swift"]))
+                params: .vcsStageFiles(VCSStageFilesParams(projectID: projectID, paths: ["a.swift", "b.swift"])),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )
@@ -435,7 +625,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "8b",
                 method: .vcsUnstageFiles,
-                params: .vcsUnstageFiles(VCSUnstageFilesParams(projectID: projectID, paths: ["a.swift"]))
+                params: .vcsUnstageFiles(VCSUnstageFilesParams(projectID: projectID, paths: ["a.swift"])),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )
@@ -443,7 +634,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "8c",
                 method: .vcsDiscardFiles,
-                params: .vcsDiscardFiles(VCSDiscardFilesParams(projectID: projectID, paths: ["a.swift"], untrackedPaths: ["tmp.txt"]))
+                params: .vcsDiscardFiles(VCSDiscardFilesParams(projectID: projectID, paths: ["a.swift"], untrackedPaths: ["tmp.txt"])),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )
@@ -467,11 +659,21 @@ struct MuxyRemoteServerRoutingTests {
         let clientID = authedClient(on: server)
 
         let pushResponse = await server.processRequest(
-            MuxyRequest(id: "8d", method: .vcsPush, params: .vcsPush(VCSPushParams(projectID: projectID))),
+            MuxyRequest(
+                id: "8d",
+                method: .vcsPush,
+                params: .vcsPush(VCSPushParams(projectID: projectID)),
+                sessionToken: Self.testSessionToken
+            ),
             clientID: clientID
         )
         let pullResponse = await server.processRequest(
-            MuxyRequest(id: "8e", method: .vcsPull, params: .vcsPull(VCSPullParams(projectID: projectID))),
+            MuxyRequest(
+                id: "8e",
+                method: .vcsPull,
+                params: .vcsPull(VCSPullParams(projectID: projectID)),
+                sessionToken: Self.testSessionToken
+            ),
             clientID: clientID
         )
 
@@ -497,7 +699,12 @@ struct MuxyRemoteServerRoutingTests {
         )
 
         let response = await server.processRequest(
-            MuxyRequest(id: "8r", method: .vcsRefresh, params: .vcsRefresh(VCSRefreshParams(projectID: projectID))),
+            MuxyRequest(
+                id: "8r",
+                method: .vcsRefresh,
+                params: .vcsRefresh(VCSRefreshParams(projectID: projectID)),
+                sessionToken: Self.testSessionToken
+            ),
             clientID: authedClient(on: server)
         )
 
@@ -517,15 +724,30 @@ struct MuxyRemoteServerRoutingTests {
         let clientID = authedClient(on: server)
 
         let listResponse = await server.processRequest(
-            MuxyRequest(id: "8f", method: .vcsListBranches, params: .vcsListBranches(VCSListBranchesParams(projectID: projectID))),
+            MuxyRequest(
+                id: "8f",
+                method: .vcsListBranches,
+                params: .vcsListBranches(VCSListBranchesParams(projectID: projectID)),
+                sessionToken: Self.testSessionToken
+            ),
             clientID: clientID
         )
         _ = await server.processRequest(
-            MuxyRequest(id: "8g", method: .vcsSwitchBranch, params: .vcsSwitchBranch(VCSSwitchBranchParams(projectID: projectID, branch: "feature/a"))),
+            MuxyRequest(
+                id: "8g",
+                method: .vcsSwitchBranch,
+                params: .vcsSwitchBranch(VCSSwitchBranchParams(projectID: projectID, branch: "feature/a")),
+                sessionToken: Self.testSessionToken
+            ),
             clientID: clientID
         )
         _ = await server.processRequest(
-            MuxyRequest(id: "8h", method: .vcsCreateBranch, params: .vcsCreateBranch(VCSCreateBranchParams(projectID: projectID, name: "feature/b"))),
+            MuxyRequest(
+                id: "8h",
+                method: .vcsCreateBranch,
+                params: .vcsCreateBranch(VCSCreateBranchParams(projectID: projectID, name: "feature/b")),
+                sessionToken: Self.testSessionToken
+            ),
             clientID: clientID
         )
 
@@ -556,7 +778,8 @@ struct MuxyRemoteServerRoutingTests {
                     body: "Body",
                     baseBranch: "main",
                     draft: true
-                ))
+                )),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )
@@ -588,7 +811,8 @@ struct MuxyRemoteServerRoutingTests {
                     number: 42,
                     method: .squash,
                     deleteBranch: true
-                ))
+                )),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )
@@ -620,7 +844,8 @@ struct MuxyRemoteServerRoutingTests {
                     branch: "feature",
                     createBranch: true,
                     baseBranch: "main"
-                ))
+                )),
+                sessionToken: Self.testSessionToken
             ),
             clientID: clientID
         )
@@ -628,7 +853,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "8k",
                 method: .vcsRemoveWorktree,
-                params: .vcsRemoveWorktree(VCSRemoveWorktreeParams(projectID: projectID, worktreeID: worktreeID))
+                params: .vcsRemoveWorktree(VCSRemoveWorktreeParams(projectID: projectID, worktreeID: worktreeID)),
+                sessionToken: Self.testSessionToken
             ),
             clientID: clientID
         )
@@ -657,7 +883,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "9",
                 method: .subscribe,
-                params: .subscribe(SubscribeParams(events: [.workspaceChanged]))
+                params: .subscribe(SubscribeParams(events: [.workspaceChanged])),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )
@@ -665,7 +892,8 @@ struct MuxyRemoteServerRoutingTests {
             MuxyRequest(
                 id: "10",
                 method: .unsubscribe,
-                params: .unsubscribe(UnsubscribeParams(events: [.workspaceChanged]))
+                params: .unsubscribe(UnsubscribeParams(events: [.workspaceChanged])),
+                sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
         )

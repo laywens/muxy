@@ -7,21 +7,31 @@ sequenceDiagram
   participant C as Client
   participant S as Server
 
-  C->>S: { type: request, payload: { id, method, params } }
-  S-->>C: { type: response, payload: { id, result or error } }
+  C->>S: { protocolVersion, type: request, payload: { id, method, params, sessionToken? } }
+  S-->>C: { protocolVersion, type: response, payload: { id, result | error } }
   Note over S,C: Server may push events at any time after auth
-  S--)C: { type: event, payload: { event, data } }
+  S--)C: { protocolVersion, type: event, payload: { event, data } }
 ```
+
+## Versioning
+
+Protocol version `2` is current. Version `1` is accepted during the DEC-009
+deprecation window so older companions can migrate.
+
+If `protocolVersion` is absent, the server treats the envelope as version `1`.
+New clients should always send `protocolVersion: 2`.
 
 ## Request envelope
 
 ```json
 {
+  "protocolVersion": 2,
   "type": "request",
   "payload": {
     "id": "request-id",
     "method": "listProjects",
-    "params": null
+    "params": null,
+    "sessionToken": "64-hex-character-session-token"
   }
 }
 ```
@@ -32,21 +42,125 @@ Rules:
 - `method` identifies the API operation.
 - `params.type` must match `method` when params are present.
 - Methods without parameters may send `params: null`.
+- Auth methods omit `sessionToken`. Every post-auth method must include the
+  session token returned by `pairing`.
 
 Example with params:
 
 ```json
 {
-  "id": "req-1",
-  "method": "getWorkspace",
-  "params": {
-    "type": "getWorkspace",
-    "value": {
-      "projectID": "9b84c9a0-1d55-4c64-bbf6-ef59ee02fa09"
-    }
+  "protocolVersion": 2,
+  "type": "request",
+  "payload": {
+    "id": "req-1",
+    "method": "getWorkspace",
+    "params": {
+      "type": "getWorkspace",
+      "value": {
+        "projectID": "9b84c9a0-1d55-4c64-bbf6-ef59ee02fa09"
+      }
+    },
+    "sessionToken": "64-hex-character-session-token"
   }
 }
 ```
+
+## Authentication
+
+### `beginAuthentication`
+
+`beginAuthentication` starts protocol v2 authentication and is allowed before
+the client is authenticated.
+
+Params:
+
+```json
+{
+  "type": "beginAuthentication",
+  "value": {
+    "deviceID": "2f8d1f9f-e065-4f62-af30-8c4b3d0bfc53",
+    "deviceName": "Pixel 9",
+    "deviceFingerprint": "client-install-fingerprint"
+  }
+}
+```
+
+Result:
+
+```json
+{
+  "type": "authChallenge",
+  "value": {
+    "challengeID": "64-hex-character-id",
+    "nonce": "32-hex-character-nonce",
+    "serverTimestamp": 1774000000000,
+    "acceptedVersions": [1, 2]
+  }
+}
+```
+
+Challenges expire after 30 seconds. A challenge is removed when consumed, so
+replaying the same `challengeID` fails.
+
+### `authenticateDevice`
+
+Protocol v2 request:
+
+```json
+{
+  "type": "authenticateDevice",
+  "value": {
+    "deviceID": "2f8d1f9f-e065-4f62-af30-8c4b3d0bfc53",
+    "deviceName": "Pixel 9",
+    "challengeID": "64-hex-character-id",
+    "response": "64-hex-character-hmac",
+    "deviceFingerprint": "client-install-fingerprint"
+  }
+}
+```
+
+The HMAC input is:
+
+```text
+<nonce>
+<serverTimestamp>
+<deviceFingerprint>
+```
+
+The HMAC key is the hex-decoded SHA-256 pairing token hash. The response is a
+lowercase HMAC-SHA256 hex string.
+
+Protocol v1 token auth remains accepted during the deprecation window:
+
+```json
+{
+  "type": "authenticateDevice",
+  "value": {
+    "deviceID": "2f8d1f9f-e065-4f62-af30-8c4b3d0bfc53",
+    "deviceName": "Pixel 9",
+    "token": "random-secret-token"
+  }
+}
+```
+
+Protocol v2 token-only `authenticateDevice` requests return `400 Invalid parameters`.
+
+Successful authentication returns:
+
+```json
+{
+  "type": "pairing",
+  "value": {
+    "clientID": "62ea9d06-a1f4-4a11-9f39-33ee322f6573",
+    "deviceName": "Pixel 9",
+    "acceptedVersions": [1, 2],
+    "sessionToken": "64-hex-character-session-token"
+  }
+}
+```
+
+`sessionToken` is scoped to the current WebSocket session. Clients must not use
+it as a long-lived device credential.
 
 ## Response envelope
 
@@ -54,6 +168,7 @@ Success:
 
 ```json
 {
+  "protocolVersion": 2,
   "type": "response",
   "payload": {
     "id": "request-id",
@@ -66,6 +181,7 @@ Failure:
 
 ```json
 {
+  "protocolVersion": 2,
   "type": "response",
   "payload": {
     "id": "request-id",
@@ -80,6 +196,7 @@ Only one of `result` or `error` is present; the unused field is omitted.
 
 ```json
 {
+  "protocolVersion": 2,
   "type": "event",
   "payload": {
     "event": "workspaceChanged",

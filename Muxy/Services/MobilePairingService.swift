@@ -51,12 +51,17 @@ enum MobilePairingService {
         return hosts
     }
 
-    static func pairingURIString(for host: MobilePairingHost, port: UInt16) -> String? {
+    static func pairingURIString(
+        for host: MobilePairingHost,
+        port: UInt16,
+        certificateFingerprint: String? = nil
+    ) -> String? {
         MobilePairingURI.makeString(
             host: host.host,
             port: port,
             service: host.serviceName,
-            label: host.label
+            label: host.label,
+            certificateFingerprint: certificateFingerprint
         )
     }
 

@@ -14,6 +14,8 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.1"),
         .package(url: "https://github.com/jpsim/Yams", from: "5.1.0"),
         .package(url: "https://github.com/getsentry/sentry-cocoa", from: "8.40.0"),
+        .package(url: "https://github.com/apple/swift-certificates.git", .upToNextMajor(from: "1.0.0")),
+        .package(url: "https://github.com/apple/swift-crypto.git", "1.0.0" ..< "5.0.0"),
     ],
     targets: [
         .target(
@@ -38,7 +40,9 @@ let package = Package(
                 "GhosttyKit",
                 "MuxyShared",
                 "MuxyServer",
+                .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "X509", package: "swift-certificates"),
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "Sentry", package: "sentry-cocoa"),
             ],
@@ -80,6 +84,8 @@ let package = Package(
                 "Muxy",
                 "MuxyShared",
                 "MuxyServer",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "X509", package: "swift-certificates"),
                 .product(name: "Yams", package: "Yams"),
             ],
             path: "Tests/MuxyTests",

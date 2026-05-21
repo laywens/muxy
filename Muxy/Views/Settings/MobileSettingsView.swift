@@ -156,7 +156,11 @@ struct MobileSettingsView: View {
     }
 
     private func pairingURI(for host: MobilePairingHost) -> String? {
-        MobilePairingService.pairingURIString(for: host, port: service.port)
+        MobilePairingService.pairingURIString(
+            for: host,
+            port: service.port,
+            certificateFingerprint: service.serverCertificateFingerprint
+        )
     }
 
     private func refreshPairingHosts() {

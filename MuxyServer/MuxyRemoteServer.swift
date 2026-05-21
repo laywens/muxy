@@ -2,6 +2,7 @@ import Foundation
 import MuxyShared
 import Network
 import os
+import Security
 
 private let logger = Logger(subsystem: "app.muxy", category: "RemoteServer")
 
@@ -13,16 +14,30 @@ public enum DeviceAuthDecision: Sendable {
 
 public enum MuxyRemoteServerError: LocalizedError {
     case invalidPort(UInt16)
+    case missingTLSIdentity
     case startSuperseded
 
     public var errorDescription: String? {
         switch self {
         case let .invalidPort(port):
             "Invalid port \(port)."
+        case .missingTLSIdentity:
+            "Remote server TLS identity is required."
         case .startSuperseded:
             "Server start was superseded by a new start request."
         }
     }
+}
+
+public typealias RemoteServerTLSIdentityProvider = @Sendable () throws -> RemoteServerTLSIdentity
+
+public struct DeviceChallengeAuthRequest: Sendable {
+    public let deviceID: UUID
+    public let name: String
+    public let nonce: String
+    public let serverTimestamp: Int64
+    public let deviceFingerprint: String
+    public let response: String
 }
 
 @MainActor
@@ -46,6 +61,7 @@ public protocol MuxyRemoteServerDelegate: AnyObject {
     func releasePane(paneID: UUID, clientID: UUID)
     func registerDevice(clientID: UUID, name: String)
     func authenticateDevice(deviceID: UUID, token: String, name: String) -> DeviceAuthDecision
+    func authenticateDeviceChallenge(_ request: DeviceChallengeAuthRequest) -> DeviceAuthDecision
     func requestPairing(deviceID: UUID, token: String, name: String) async -> DeviceAuthDecision
     func getDeviceTheme() -> DeviceThemeEventDTO?
     func clientDisconnected(clientID: UUID)
@@ -82,17 +98,24 @@ public final class MuxyRemoteServer: @unchecked Sendable {
     public static let bonjourServiceType: String = "_muxy._tcp"
 
     private let port: UInt16
+    private let tlsIdentityProvider: RemoteServerTLSIdentityProvider?
     private var listener: NWListener?
     private var connections: [UUID: ClientConnection] = [:]
     private var authenticatedClients: Set<UUID> = []
     private var deviceIDByClient: [UUID: UUID] = [:]
+    private let authChallenges = RemoteAuthChallengeStore()
+    private let sessionTokens = RemoteSessionTokens()
     private let queue = DispatchQueue(label: "app.muxy.remoteServer")
     private var startCompletion: (@Sendable (Result<Void, Error>) -> Void)?
     private var stopCompletions: [@Sendable () -> Void] = []
     public weak var delegate: (any MuxyRemoteServerDelegate)?
 
-    public init(port: UInt16 = MuxyRemoteServer.defaultPort) {
+    public init(
+        port: UInt16 = MuxyRemoteServer.defaultPort,
+        tlsIdentityProvider: RemoteServerTLSIdentityProvider? = nil
+    ) {
         self.port = port
+        self.tlsIdentityProvider = tlsIdentityProvider
     }
 
     public func start(completion: (@Sendable (Result<Void, Error>) -> Void)? = nil) {
@@ -116,6 +139,7 @@ public final class MuxyRemoteServer: @unchecked Sendable {
             self.connections.removeAll()
             self.authenticatedClients.removeAll()
             self.deviceIDByClient.removeAll()
+            self.sessionTokens.removeAll()
 
             guard let listener = self.listener else {
                 logger.info("Remote server stopped")
@@ -171,7 +195,15 @@ public final class MuxyRemoteServer: @unchecked Sendable {
         }
 
         do {
-            let params = NWParameters.tcp
+            guard let tlsIdentityProvider else {
+                logger.error("Remote server cannot start without TLS identity")
+                finishStart(.failure(MuxyRemoteServerError.missingTLSIdentity))
+                return
+            }
+            let identity = try tlsIdentityProvider()
+            let tls = NWProtocolTLS.Options()
+            sec_protocol_options_set_local_identity(tls.securityProtocolOptions, identity.secIdentity)
+            let params = NWParameters(tls: tls)
             params.allowLocalEndpointReuse = true
             let ws = NWProtocolWebSocket.Options()
             ws.autoReplyPing = true
@@ -233,6 +265,7 @@ public final class MuxyRemoteServer: @unchecked Sendable {
             self?.connections.removeValue(forKey: id)
             self?.authenticatedClients.remove(id)
             self?.deviceIDByClient.removeValue(forKey: id)
+            self?.sessionTokens.remove(clientID: id)
             logger.info("Client disconnected: \(id)")
         }
         Task { @MainActor in
@@ -247,23 +280,33 @@ public final class MuxyRemoteServer: @unchecked Sendable {
         }
     }
 
-    func _testingMarkAuthenticated(_ id: UUID) {
+    func _testingMarkAuthenticated(_ id: UUID, sessionToken: String? = nil) {
         queue.sync {
-            authenticatedClients.insert(id)
+            _ = authenticatedClients.insert(id)
+        }
+        if let sessionToken {
+            sessionTokens.set(sessionToken, for: id)
         }
     }
 
-    private func isAuthenticated(_ id: UUID) -> Bool {
+    private func isAuthenticated(_ id: UUID, sessionToken: String?) -> Bool {
         queue.sync { authenticatedClients.contains(id) }
+            && sessionTokens.validate(clientID: id, providedToken: sessionToken)
     }
 
-    func handleRequest(_ request: MuxyRequest, from clientID: UUID) {
+    func handleRequest(
+        _ request: MuxyRequest,
+        from clientID: UUID,
+        protocolVersion: Int = MuxyProtocolVersion.current
+    ) {
         if Self.voidMethods.contains(request.method) {
-            Task { @MainActor in _ = await processRequest(request, clientID: clientID) }
+            Task { @MainActor in
+                _ = await processRequest(request, clientID: clientID, protocolVersion: protocolVersion)
+            }
             return
         }
         Task { @MainActor in
-            let response = await processRequest(request, clientID: clientID)
+            let response = await processRequest(request, clientID: clientID, protocolVersion: protocolVersion)
             guard let data = try? MuxyCodec.encode(.response(response)) else { return }
             self.queue.async { [weak self] in
                 self?.connections[clientID]?.send(data)
@@ -274,7 +317,11 @@ public final class MuxyRemoteServer: @unchecked Sendable {
     private static let voidMethods: Set<MuxyMethod> = [.terminalInput]
 
     @MainActor
-    func processRequest(_ request: MuxyRequest, clientID: UUID) async -> MuxyResponse {
+    func processRequest(
+        _ request: MuxyRequest,
+        clientID: UUID,
+        protocolVersion: Int = MuxyProtocolVersion.current
+    ) async -> MuxyResponse {
         guard let delegate else {
             return MuxyResponse(id: request.id, error: MuxyError.internalError)
         }
@@ -296,32 +343,91 @@ public final class MuxyRemoteServer: @unchecked Sendable {
                 decision: decision
             )
 
+        case .beginAuthentication:
+            guard case let .beginAuthentication(params) = request.params else {
+                return MuxyResponse(id: request.id, error: .invalidParams)
+            }
+            do {
+                let challenge = try authChallenges.issue(
+                    deviceID: params.deviceID,
+                    deviceName: params.deviceName,
+                    deviceFingerprint: params.deviceFingerprint
+                )
+                return MuxyResponse(
+                    id: request.id,
+                    result: .authChallenge(AuthChallengeDTO(
+                        challengeID: challenge.challengeID,
+                        nonce: challenge.nonce,
+                        serverTimestamp: challenge.serverTimestamp
+                    ))
+                )
+            } catch {
+                logger.error("Failed to issue auth challenge: \(error)")
+                return MuxyResponse(id: request.id, error: .internalError)
+            }
+
         case .authenticateDevice:
             guard case let .authenticateDevice(params) = request.params else {
                 return MuxyResponse(id: request.id, error: .invalidParams)
             }
-            let decision = delegate.authenticateDevice(
-                deviceID: params.deviceID,
-                token: params.token,
-                name: params.deviceName
-            )
-            return finalizeAuth(
-                requestID: request.id,
-                clientID: clientID,
-                deviceID: params.deviceID,
-                decision: decision
-            )
+            if protocolVersion == MuxyProtocolVersion.legacy {
+                guard let token = params.token else {
+                    return MuxyResponse(id: request.id, error: .invalidParams)
+                }
+                let decision = delegate.authenticateDevice(
+                    deviceID: params.deviceID,
+                    token: token,
+                    name: params.deviceName
+                )
+                return finalizeAuth(
+                    requestID: request.id,
+                    clientID: clientID,
+                    deviceID: params.deviceID,
+                    decision: decision
+                )
+            }
+
+            if let challengeID = params.challengeID,
+               let response = params.response,
+               let deviceFingerprint = params.deviceFingerprint
+            {
+                guard let challenge = authChallenges.consume(challengeID: challengeID) else {
+                    return MuxyResponse(id: request.id, error: .unauthorized)
+                }
+                guard challenge.deviceID == params.deviceID,
+                      challenge.deviceName == params.deviceName,
+                      challenge.deviceFingerprint == deviceFingerprint
+                else {
+                    return MuxyResponse(id: request.id, error: .invalidParams)
+                }
+                let decision = delegate.authenticateDeviceChallenge(DeviceChallengeAuthRequest(
+                    deviceID: params.deviceID,
+                    name: params.deviceName,
+                    nonce: challenge.nonce,
+                    serverTimestamp: challenge.serverTimestamp,
+                    deviceFingerprint: deviceFingerprint,
+                    response: response
+                ))
+                return finalizeAuth(
+                    requestID: request.id,
+                    clientID: clientID,
+                    deviceID: params.deviceID,
+                    decision: decision
+                )
+            }
+            return MuxyResponse(id: request.id, error: .invalidParams)
 
         default:
             break
         }
 
-        guard isAuthenticated(clientID) else {
+        guard isAuthenticated(clientID, sessionToken: request.sessionToken) else {
             return MuxyResponse(id: request.id, error: .unauthorized)
         }
 
         switch request.method {
         case .pairDevice,
+             .beginAuthentication,
              .authenticateDevice:
             return MuxyResponse(id: request.id, error: .internalError)
 
@@ -715,6 +821,13 @@ public final class MuxyRemoteServer: @unchecked Sendable {
     ) -> MuxyResponse {
         switch decision {
         case let .approved(deviceName):
+            let sessionToken: String
+            do {
+                sessionToken = try sessionTokens.issue(for: clientID)
+            } catch {
+                logger.error("Failed to issue session token: \(error)")
+                return MuxyResponse(id: requestID, error: .internalError)
+            }
             markAuthenticated(clientID, deviceID: deviceID)
             delegate?.registerDevice(clientID: clientID, name: deviceName)
             let theme = delegate?.getDeviceTheme()
@@ -723,7 +836,8 @@ public final class MuxyRemoteServer: @unchecked Sendable {
                 deviceName: deviceName,
                 themeFg: theme?.fg,
                 themeBg: theme?.bg,
-                themePalette: theme?.palette
+                themePalette: theme?.palette,
+                sessionToken: sessionToken
             )
             return MuxyResponse(id: requestID, result: .pairing(result))
         case .unknown:

@@ -87,12 +87,29 @@ final class ApprovedDevicesStore {
         save()
     }
 
-    static func hash(_ token: String) -> String {
+    nonisolated static func hash(_ token: String) -> String {
         let digest = SHA256.hash(data: Data(token.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+    nonisolated static func challengeResponse(
+        tokenHash: String,
+        nonce: String,
+        serverTimestamp: Int64,
+        deviceFingerprint: String
+    ) -> String {
+        guard let keyData = hexData(tokenHash) else { return "" }
+        let key = SymmetricKey(data: keyData)
+        let message = "\(nonce)\n\(serverTimestamp)\n\(deviceFingerprint)"
+        let code = HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: key)
+        return code.map { String(format: "%02x", $0) }.joined()
+    }
+
+    nonisolated static func constantTimeHexEquals(_ lhs: String, _ rhs: String) -> Bool {
+        constantTimeEquals(lhs, rhs)
+    }
+
+    nonisolated private static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
         let left = Array(lhs.utf8)
         let right = Array(rhs.utf8)
         guard left.count == right.count else { return false }
@@ -101,6 +118,19 @@ final class ApprovedDevicesStore {
             diff |= left[index] ^ right[index]
         }
         return diff == 0
+    }
+
+    nonisolated private static func hexData(_ hex: String) -> Data? {
+        guard hex.count.isMultiple(of: 2) else { return nil }
+        var data = Data(capacity: hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index ..< next], radix: 16) else { return nil }
+            data.append(byte)
+            index = next
+        }
+        return data
     }
 
     private func save() {

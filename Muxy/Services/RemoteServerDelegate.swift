@@ -260,6 +260,28 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         return .approved(deviceName: name)
     }
 
+    func authenticateDeviceChallenge(_ request: DeviceChallengeAuthRequest) -> DeviceAuthDecision {
+        guard let device = ApprovedDevicesStore.shared.devices.first(where: { $0.id == request.deviceID }) else {
+            return .unknown
+        }
+        let expected = ApprovedDevicesStore.challengeResponse(
+            tokenHash: device.tokenHash,
+            nonce: request.nonce,
+            serverTimestamp: request.serverTimestamp,
+            deviceFingerprint: request.deviceFingerprint
+        )
+        guard !expected.isEmpty,
+              ApprovedDevicesStore.constantTimeHexEquals(expected, request.response)
+        else {
+            return .denied
+        }
+        if device.name != request.name {
+            ApprovedDevicesStore.shared.rename(deviceID: request.deviceID, to: request.name)
+        }
+        ApprovedDevicesStore.shared.touch(deviceID: request.deviceID)
+        return .approved(deviceName: request.name)
+    }
+
     func requestPairing(deviceID: UUID, token: String, name: String) async -> DeviceAuthDecision {
         if ApprovedDevicesStore.shared.devices.contains(where: { $0.id == deviceID }) {
             return .denied

@@ -24,7 +24,38 @@ struct MuxyCodecTests {
         let data = try MuxyCodec.encode(.request(MuxyRequest(id: "v", method: .listProjects)))
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-        #expect(object["protocolVersion"] as? Int == 1)
+        #expect(object["protocolVersion"] as? Int == 2)
+    }
+
+    @Test("current protocol is v2 and accepts v1 during deprecation")
+    func currentProtocolIsV2() {
+        #expect(MuxyProtocolVersion.current == 2)
+        #expect(MuxyProtocolVersion.accepted == [1, 2])
+    }
+
+    @Test("auth challenge result round trips")
+    func authChallengeRoundTrip() throws {
+        let challenge = AuthChallengeDTO(
+            challengeID: "challenge",
+            nonce: "00112233445566778899aabbccddeeff",
+            serverTimestamp: 1_774_000_000_000,
+            acceptedVersions: [1, 2]
+        )
+
+        let data = try MuxyCodec.encode(.response(MuxyResponse(id: "auth", result: .authChallenge(challenge))))
+        let decoded = try MuxyCodec.decode(data)
+
+        guard case let .response(response, protocolVersion) = decoded,
+              case let .authChallenge(roundTripped) = response.result
+        else {
+            Issue.record("expected auth challenge response")
+            return
+        }
+        #expect(protocolVersion == 2)
+        #expect(roundTripped.challengeID == "challenge")
+        #expect(roundTripped.nonce == "00112233445566778899aabbccddeeff")
+        #expect(roundTripped.serverTimestamp == 1_774_000_000_000)
+        #expect(roundTripped.acceptedVersions == [1, 2])
     }
 
     @Test("explicit future protocolVersion round trips")
@@ -45,7 +76,16 @@ struct MuxyCodecTests {
 
         let result = try JSONDecoder().decode(PairingResultDTO.self, from: Data(json.utf8))
 
-        #expect(result.acceptedVersions == [1])
+        #expect(result.acceptedVersions == [1, 2])
+    }
+
+    @Test("pairing result session token defaults nil for legacy payloads")
+    func pairingResultSessionTokenDefaultsNil() throws {
+        let json = #"{"clientID":"00000000-0000-0000-0000-000000000001","deviceName":"iPhone"}"#
+
+        let result = try JSONDecoder().decode(PairingResultDTO.self, from: Data(json.utf8))
+
+        #expect(result.sessionToken == nil)
     }
 
     @Test("device info defaults acceptedVersions for legacy payloads")
@@ -54,7 +94,7 @@ struct MuxyCodecTests {
 
         let result = try JSONDecoder().decode(DeviceInfoDTO.self, from: Data(json.utf8))
 
-        #expect(result.acceptedVersions == [1])
+        #expect(result.acceptedVersions == [1, 2])
     }
 
     @Test("request round-trip preserves id, method and params")

@@ -47,6 +47,7 @@ final class MobileServerService {
 
     private(set) var lastError: String?
     private(set) var isPortInUse = false
+    private(set) var serverCertificateFingerprint: String?
 
     private var server: MuxyRemoteServer?
     private var delegate: MuxyRemoteServerDelegate?
@@ -107,6 +108,7 @@ final class MobileServerService {
         guard let current = server else { return }
         server = nil
         delegate = nil
+        serverCertificateFingerprint = nil
         retire(current)
     }
 
@@ -132,7 +134,21 @@ final class MobileServerService {
     }
 
     private func launchServer(port: UInt16, delegateBuilder: (MuxyRemoteServer) -> MuxyRemoteServerDelegate) {
-        let newServer = MuxyRemoteServer(port: port)
+        let identityStore = RemoteServerIdentityStore()
+        let identity: RemoteServerTLSIdentity
+        do {
+            identity = try identityStore.loadOrCreateIdentity(commonName: "Muxy Remote Server")
+            serverCertificateFingerprint = identity.fingerprint
+        } catch {
+            logger.error("Mobile server failed to create TLS identity: \(error.localizedDescription)")
+            serverCertificateFingerprint = nil
+            lastError = friendlyMessage(for: error, port: port)
+            isPortInUse = false
+            return
+        }
+        let newServer = MuxyRemoteServer(port: port) {
+            identity
+        }
         let newDelegate = delegateBuilder(newServer)
         newServer.delegate = newDelegate
         server = newServer
@@ -155,6 +171,7 @@ final class MobileServerService {
         case let .failure(error):
             logger.error("Mobile server failed to start on port \(port): \(error.localizedDescription)")
             isPortInUse = Self.isAddressInUseError(error)
+            serverCertificateFingerprint = nil
             retireCurrentServer()
             lastError = friendlyMessage(for: error, port: port)
         }

@@ -8,19 +8,21 @@ public enum MuxyMessageType: String, Codable, Sendable {
 
 public enum MuxyProtocolVersion {
     public static let legacy = 1
-    public static let current = 1
-    public static let accepted = [current]
+    public static let current = 2
+    public static let accepted = [legacy, current]
 }
 
 public struct MuxyRequest: Codable, Sendable {
     public let id: String
     public let method: MuxyMethod
     public let params: MuxyParams?
+    public let sessionToken: String?
 
-    public init(id: String, method: MuxyMethod, params: MuxyParams? = nil) {
+    public init(id: String, method: MuxyMethod, params: MuxyParams? = nil, sessionToken: String? = nil) {
         self.id = id
         self.method = method
         self.params = params
+        self.sessionToken = sessionToken
     }
 }
 
@@ -81,6 +83,7 @@ public enum MuxyMethod: String, Codable, Sendable {
     case getTerminalContent
     case registerDevice
     case pairDevice
+    case beginAuthentication
     case authenticateDevice
     case takeOverPane
     case releasePane
@@ -124,6 +127,7 @@ public enum MuxyParams: Codable, Sendable {
     case getTerminalContent(GetTerminalContentParams)
     case registerDevice(RegisterDeviceParams)
     case pairDevice(PairDeviceParams)
+    case beginAuthentication(BeginAuthenticationParams)
     case authenticateDevice(AuthenticateDeviceParams)
     case takeOverPane(TakeOverPaneParams)
     case releasePane(ReleasePaneParams)
@@ -172,6 +176,7 @@ public enum MuxyParams: Codable, Sendable {
         case "terminalScroll": self = try .terminalScroll(container.decode(TerminalScrollParams.self, forKey: .value))
         case "registerDevice": self = try .registerDevice(container.decode(RegisterDeviceParams.self, forKey: .value))
         case "pairDevice": self = try .pairDevice(container.decode(PairDeviceParams.self, forKey: .value))
+        case "beginAuthentication": self = try .beginAuthentication(container.decode(BeginAuthenticationParams.self, forKey: .value))
         case "authenticateDevice": self = try .authenticateDevice(container.decode(AuthenticateDeviceParams.self, forKey: .value))
         case "takeOverPane": self = try .takeOverPane(container.decode(TakeOverPaneParams.self, forKey: .value))
         case "releasePane": self = try .releasePane(container.decode(ReleasePaneParams.self, forKey: .value))
@@ -232,6 +237,8 @@ public enum MuxyParams: Codable, Sendable {
         case let .registerDevice(v): try container.encode("registerDevice", forKey: .type)
             try container.encode(v, forKey: .value)
         case let .pairDevice(v): try container.encode("pairDevice", forKey: .type)
+            try container.encode(v, forKey: .value)
+        case let .beginAuthentication(v): try container.encode("beginAuthentication", forKey: .type)
             try container.encode(v, forKey: .value)
         case let .authenticateDevice(v): try container.encode("authenticateDevice", forKey: .type)
             try container.encode(v, forKey: .value)
@@ -294,6 +301,7 @@ public enum MuxyResult: Codable, Sendable {
     case terminalCells(TerminalCellsDTO)
     case deviceInfo(DeviceInfoDTO)
     case pairing(PairingResultDTO)
+    case authChallenge(AuthChallengeDTO)
     case paneOwner(PaneOwnerDTO)
     case vcsStatus(VCSStatusDTO)
     case vcsBranches(VCSBranchesDTO)
@@ -320,6 +328,7 @@ public enum MuxyResult: Codable, Sendable {
         case "terminalCells": self = try .terminalCells(container.decode(TerminalCellsDTO.self, forKey: .value))
         case "deviceInfo": self = try .deviceInfo(container.decode(DeviceInfoDTO.self, forKey: .value))
         case "pairing": self = try .pairing(container.decode(PairingResultDTO.self, forKey: .value))
+        case "authChallenge": self = try .authChallenge(container.decode(AuthChallengeDTO.self, forKey: .value))
         case "paneOwner": self = try .paneOwner(container.decode(PaneOwnerDTO.self, forKey: .value))
         case "vcsStatus": self = try .vcsStatus(container.decode(VCSStatusDTO.self, forKey: .value))
         case "vcsBranches": self = try .vcsBranches(container.decode(VCSBranchesDTO.self, forKey: .value))
@@ -350,6 +359,8 @@ public enum MuxyResult: Codable, Sendable {
         case let .deviceInfo(v): try container.encode("deviceInfo", forKey: .type)
             try container.encode(v, forKey: .value)
         case let .pairing(v): try container.encode("pairing", forKey: .type)
+            try container.encode(v, forKey: .value)
+        case let .authChallenge(v): try container.encode("authChallenge", forKey: .type)
             try container.encode(v, forKey: .value)
         case let .paneOwner(v): try container.encode("paneOwner", forKey: .type)
             try container.encode(v, forKey: .value)
