@@ -65,6 +65,7 @@ public protocol MuxyRemoteServerDelegate: AnyObject {
     func requestPairing(deviceID: UUID, token: String, name: String) async -> DeviceAuthDecision
     func remoteCapabilities(for deviceID: UUID) -> Set<RemoteCapability>
     func confirmRemoteDestructiveAction(_ request: RemoteDestructiveActionRequest) async -> Bool
+    func recordRemoteAuditEvent(_ event: RemoteAuditEvent)
     func getDeviceTheme() -> DeviceThemeEventDTO?
     func clientDisconnected(clientID: UUID)
     func getPaneOwner(paneID: UUID) -> PaneOwnerDTO?
@@ -103,6 +104,8 @@ public extension MuxyRemoteServerDelegate {
     func confirmRemoteDestructiveAction(_: RemoteDestructiveActionRequest) async -> Bool {
         false
     }
+
+    func recordRemoteAuditEvent(_: RemoteAuditEvent) {}
 }
 
 public final class MuxyRemoteServer: @unchecked Sendable {
@@ -366,6 +369,94 @@ public final class MuxyRemoteServer: @unchecked Sendable {
         }
     }
 
+    private func deviceID(for clientID: UUID) -> UUID? {
+        queue.sync { deviceIDByClient[clientID] }
+    }
+
+    private func remoteAuditPayload(for request: MuxyRequest) -> (projectID: UUID?, argsSummary: String) {
+        switch request.params {
+        case let .vcsCommit(params):
+            (
+                params.projectID,
+                "projectID=\(params.projectID.uuidString) stageAll=\(params.stageAll) messageBytes=\(params.message.utf8.count)"
+            )
+        case let .vcsPush(params):
+            (params.projectID, "projectID=\(params.projectID.uuidString)")
+        case let .vcsPull(params):
+            (params.projectID, "projectID=\(params.projectID.uuidString)")
+        case let .vcsDiscardFiles(params):
+            (
+                params.projectID,
+                "projectID=\(params.projectID.uuidString) paths=\(params.paths.count) untrackedPaths=\(params.untrackedPaths.count)"
+            )
+        case let .vcsMergePullRequest(params):
+            (
+                params.projectID,
+                "projectID=\(params.projectID.uuidString) number=\(params.number) method=\(params.method.rawValue) deleteBranch=\(params.deleteBranch)"
+            )
+        case let .vcsRemoveWorktree(params):
+            (
+                params.projectID,
+                "projectID=\(params.projectID.uuidString) worktreeID=\(params.worktreeID.uuidString)"
+            )
+        default:
+            (nil, "invalidParams")
+        }
+    }
+
+    @MainActor
+    private func recordRemoteAuditEvent(
+        for request: MuxyRequest,
+        clientID: UUID,
+        projectID: UUID?,
+        argsSummary: String,
+        outcome: RemoteAuditEvent.Outcome,
+        errorMessage: String? = nil
+    ) {
+        guard let deviceID = deviceID(for: clientID) else { return }
+        delegate?.recordRemoteAuditEvent(RemoteAuditEvent(
+            clientID: clientID,
+            deviceID: deviceID,
+            method: request.method,
+            projectID: projectID,
+            argsSummary: argsSummary,
+            outcome: outcome,
+            errorMessage: errorMessage
+        ))
+    }
+
+    @MainActor
+    private func auditDestructiveCall(
+        _ request: MuxyRequest,
+        clientID: UUID,
+        projectID: UUID?,
+        argsSummary: String,
+        operation: () async throws -> Void
+    ) async -> MuxyResponse {
+        do {
+            try await operation()
+            recordRemoteAuditEvent(
+                for: request,
+                clientID: clientID,
+                projectID: projectID,
+                argsSummary: argsSummary,
+                outcome: .succeeded
+            )
+            return MuxyResponse(id: request.id, result: .ok)
+        } catch {
+            let message = error.localizedDescription
+            recordRemoteAuditEvent(
+                for: request,
+                clientID: clientID,
+                projectID: projectID,
+                argsSummary: argsSummary,
+                outcome: .failed,
+                errorMessage: message
+            )
+            return MuxyResponse(id: request.id, error: MuxyError(code: 500, message: message))
+        }
+    }
+
     func handleRequest(
         _ request: MuxyRequest,
         from clientID: UUID,
@@ -508,6 +599,15 @@ public final class MuxyRemoteServer: @unchecked Sendable {
                 return MuxyResponse(id: request.id, error: .unauthorized)
             }
             guard await delegate.confirmRemoteDestructiveAction(actionRequest) else {
+                let payload = remoteAuditPayload(for: request)
+                recordRemoteAuditEvent(
+                    for: request,
+                    clientID: clientID,
+                    projectID: payload.projectID,
+                    argsSummary: payload.argsSummary,
+                    outcome: .denied,
+                    errorMessage: "Local confirmation denied."
+                )
                 return MuxyResponse(id: request.id, error: .permissionDenied)
             }
             markDestructiveActionConfirmed(for: clientID)
@@ -665,33 +765,39 @@ public final class MuxyRemoteServer: @unchecked Sendable {
             guard case let .vcsCommit(params) = request.params else {
                 return MuxyResponse(id: request.id, error: .invalidParams)
             }
-            do {
+            return await auditDestructiveCall(
+                request,
+                clientID: clientID,
+                projectID: params.projectID,
+                argsSummary: remoteAuditPayload(for: request).argsSummary
+            ) {
                 try await delegate.vcsCommit(projectID: params.projectID, message: params.message, stageAll: params.stageAll)
-                return MuxyResponse(id: request.id, result: .ok)
-            } catch {
-                return MuxyResponse(id: request.id, error: MuxyError(code: 500, message: error.localizedDescription))
             }
 
         case .vcsPush:
             guard case let .vcsPush(params) = request.params else {
                 return MuxyResponse(id: request.id, error: .invalidParams)
             }
-            do {
+            return await auditDestructiveCall(
+                request,
+                clientID: clientID,
+                projectID: params.projectID,
+                argsSummary: remoteAuditPayload(for: request).argsSummary
+            ) {
                 try await delegate.vcsPush(projectID: params.projectID)
-                return MuxyResponse(id: request.id, result: .ok)
-            } catch {
-                return MuxyResponse(id: request.id, error: MuxyError(code: 500, message: error.localizedDescription))
             }
 
         case .vcsPull:
             guard case let .vcsPull(params) = request.params else {
                 return MuxyResponse(id: request.id, error: .invalidParams)
             }
-            do {
+            return await auditDestructiveCall(
+                request,
+                clientID: clientID,
+                projectID: params.projectID,
+                argsSummary: remoteAuditPayload(for: request).argsSummary
+            ) {
                 try await delegate.vcsPull(projectID: params.projectID)
-                return MuxyResponse(id: request.id, result: .ok)
-            } catch {
-                return MuxyResponse(id: request.id, error: MuxyError(code: 500, message: error.localizedDescription))
             }
 
         case .vcsStageFiles:
@@ -720,15 +826,17 @@ public final class MuxyRemoteServer: @unchecked Sendable {
             guard case let .vcsDiscardFiles(params) = request.params else {
                 return MuxyResponse(id: request.id, error: .invalidParams)
             }
-            do {
+            return await auditDestructiveCall(
+                request,
+                clientID: clientID,
+                projectID: params.projectID,
+                argsSummary: remoteAuditPayload(for: request).argsSummary
+            ) {
                 try await delegate.vcsDiscardFiles(
                     projectID: params.projectID,
                     paths: params.paths,
                     untrackedPaths: params.untrackedPaths
                 )
-                return MuxyResponse(id: request.id, result: .ok)
-            } catch {
-                return MuxyResponse(id: request.id, error: MuxyError(code: 500, message: error.localizedDescription))
             }
 
         case .vcsListBranches:
@@ -785,16 +893,18 @@ public final class MuxyRemoteServer: @unchecked Sendable {
             guard case let .vcsMergePullRequest(params) = request.params else {
                 return MuxyResponse(id: request.id, error: .invalidParams)
             }
-            do {
+            return await auditDestructiveCall(
+                request,
+                clientID: clientID,
+                projectID: params.projectID,
+                argsSummary: remoteAuditPayload(for: request).argsSummary
+            ) {
                 try await delegate.vcsMergePullRequest(
                     projectID: params.projectID,
                     number: params.number,
                     method: params.method,
                     deleteBranch: params.deleteBranch
                 )
-                return MuxyResponse(id: request.id, result: .ok)
-            } catch {
-                return MuxyResponse(id: request.id, error: MuxyError(code: 500, message: error.localizedDescription))
             }
 
         case .vcsAddWorktree:
@@ -818,11 +928,13 @@ public final class MuxyRemoteServer: @unchecked Sendable {
             guard case let .vcsRemoveWorktree(params) = request.params else {
                 return MuxyResponse(id: request.id, error: .invalidParams)
             }
-            do {
+            return await auditDestructiveCall(
+                request,
+                clientID: clientID,
+                projectID: params.projectID,
+                argsSummary: remoteAuditPayload(for: request).argsSummary
+            ) {
                 try await delegate.vcsRemoveWorktree(projectID: params.projectID, worktreeID: params.worktreeID)
-                return MuxyResponse(id: request.id, result: .ok)
-            } catch {
-                return MuxyResponse(id: request.id, error: MuxyError(code: 500, message: error.localizedDescription))
             }
 
         case .vcsGetDiff:

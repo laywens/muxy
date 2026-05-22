@@ -9,6 +9,7 @@ The Mobile server is **disabled by default**. Toggle it from **Settings → Mobi
 | Enable Mobile Server | off | Starts/stops the secure WebSocket listener. |
 | Port | `4865` | Stored in `UserDefaults`, applied on start. Bind failures roll the toggle back off. |
 | Approved devices | empty | List of paired clients with per-device scope toggles and revoke buttons. |
+| Remote audit log | read-only | Recent destructive remote VCS attempts from the local JSON Lines log. |
 
 ## Endpoint
 
@@ -31,6 +32,7 @@ The API is designed for trusted local networks.
 - Each approved device has remote capability scopes. Existing and newly approved devices default to all non-admin scopes; `admin` is reserved.
 - Every post-auth RPC is checked against the authenticated device's scopes before dispatch.
 - The first destructive remote VCS action in each WebSocket session requires local confirmation on the Mac.
+- Every destructive remote VCS attempt is appended to `~/Library/Application Support/Muxy/audit/remote.log`; the file rotates at 10 MB and keeps five rotated files.
 - New devices must be approved from the Mac before they become trusted.
 
 For production integrations, still treat the connection as local-network only unless you provide your own secure tunnel such as Tailscale or a VPN.

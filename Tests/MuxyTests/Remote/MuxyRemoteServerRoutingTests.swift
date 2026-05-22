@@ -41,6 +41,7 @@ private final class MockDelegate: MuxyRemoteServerDelegate {
     var capabilitiesByDevice: [UUID: Set<RemoteCapability>] = [:]
     var confirmDestructiveActionResult = true
     var confirmDestructiveActionCalls: [RemoteDestructiveActionRequest] = []
+    var remoteAuditEvents: [RemoteAuditEvent] = []
 
     func listProjects() -> [ProjectDTO] {
         listProjectsCalled += 1
@@ -100,6 +101,10 @@ private final class MockDelegate: MuxyRemoteServerDelegate {
     func confirmRemoteDestructiveAction(_ request: RemoteDestructiveActionRequest) async -> Bool {
         confirmDestructiveActionCalls.append(request)
         return confirmDestructiveActionResult
+    }
+
+    func recordRemoteAuditEvent(_ event: RemoteAuditEvent) {
+        remoteAuditEvents.append(event)
     }
 
     func getDeviceTheme() -> DeviceThemeEventDTO? { nil }
@@ -641,6 +646,35 @@ struct MuxyRemoteServerRoutingTests {
         #expect(pullResponse.error == nil)
     }
 
+    @Test("successful destructive VCS call records audit event")
+    func destructiveVCSSuccessRecordsAuditEvent() async {
+        let (server, delegate) = makeServer()
+        let deviceID = UUID()
+        let projectID = UUID()
+        let clientID = authedClient(on: server, deviceID: deviceID, capabilities: [.vcsDestructive])
+
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "destructive-audit-success",
+                method: .vcsPush,
+                params: .vcsPush(VCSPushParams(projectID: projectID)),
+                sessionToken: Self.testSessionToken
+            ),
+            clientID: clientID
+        )
+
+        #expect(response.error == nil)
+        #expect(delegate.remoteAuditEvents.count == 1)
+        let event = delegate.remoteAuditEvents.first
+        #expect(event?.clientID == clientID)
+        #expect(event?.deviceID == deviceID)
+        #expect(event?.method == .vcsPush)
+        #expect(event?.projectID == projectID)
+        #expect(event?.argsSummary.contains(projectID.uuidString) == true)
+        #expect(event?.outcome == .succeeded)
+        #expect(event?.errorMessage == nil)
+    }
+
     @Test("denied destructive VCS confirmation returns permission denied before routing")
     func deniedDestructiveVCSConfirmationBlocksRouting() async {
         let (server, delegate) = makeServer()
@@ -665,6 +699,39 @@ struct MuxyRemoteServerRoutingTests {
         #expect(response.result == nil)
         #expect(delegate.confirmDestructiveActionCalls.map(\.method) == [.vcsDiscardFiles])
         #expect(delegate.vcsDiscardFilesCalls.isEmpty)
+    }
+
+    @Test("denied destructive VCS confirmation records audit event")
+    func deniedDestructiveVCSConfirmationRecordsAuditEvent() async {
+        let (server, delegate) = makeServer()
+        delegate.confirmDestructiveActionResult = false
+        let deviceID = UUID()
+        let projectID = UUID()
+
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "destructive-audit-denied",
+                method: .vcsDiscardFiles,
+                params: .vcsDiscardFiles(VCSDiscardFilesParams(
+                    projectID: projectID,
+                    paths: ["a.swift"],
+                    untrackedPaths: ["tmp.txt"]
+                )),
+                sessionToken: Self.testSessionToken
+            ),
+            clientID: authedClient(on: server, deviceID: deviceID, capabilities: [.vcsDestructive])
+        )
+
+        #expect(response.error?.code == 403)
+        #expect(delegate.remoteAuditEvents.count == 1)
+        let event = delegate.remoteAuditEvents.first
+        #expect(event?.deviceID == deviceID)
+        #expect(event?.method == .vcsDiscardFiles)
+        #expect(event?.projectID == projectID)
+        #expect(event?.argsSummary.contains("paths=1") == true)
+        #expect(event?.argsSummary.contains("untrackedPaths=1") == true)
+        #expect(event?.outcome == .denied)
+        #expect(event?.errorMessage == "Local confirmation denied.")
     }
 
     @Test("auth result advertises delegate capabilities")
@@ -721,13 +788,14 @@ struct MuxyRemoteServerRoutingTests {
         }
 
         let (server, delegate) = makeServer()
+        let projectID = UUID()
         delegate.vcsCommitError = Boom()
 
         let response = await server.processRequest(
             MuxyRequest(
                 id: "8",
                 method: .vcsCommit,
-                params: .vcsCommit(VCSCommitParams(projectID: UUID(), message: "msg", stageAll: true)),
+                params: .vcsCommit(VCSCommitParams(projectID: projectID, message: "msg", stageAll: true)),
                 sessionToken: Self.testSessionToken
             ),
             clientID: authedClient(on: server)
@@ -735,6 +803,12 @@ struct MuxyRemoteServerRoutingTests {
 
         #expect(response.error?.code == 500)
         #expect(response.error?.message == "boom")
+        #expect(delegate.remoteAuditEvents.count == 1)
+        #expect(delegate.remoteAuditEvents.first?.method == .vcsCommit)
+        #expect(delegate.remoteAuditEvents.first?.projectID == projectID)
+        #expect(delegate.remoteAuditEvents.first?.argsSummary.contains("stageAll=true") == true)
+        #expect(delegate.remoteAuditEvents.first?.outcome == .failed)
+        #expect(delegate.remoteAuditEvents.first?.errorMessage == "boom")
     }
 
     @Test("vcs stage routes pass through payload")

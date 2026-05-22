@@ -9,9 +9,18 @@ struct MobileSettingsView: View {
     The QR carries no token — first-time pairing still needs your approval.
     """
 
+    private static let auditDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .medium
+        return formatter
+    }()
+
     @Bindable private var service = MobileServerService.shared
     @Bindable private var devices = ApprovedDevicesStore.shared
     @State private var deviceToRevoke: ApprovedDevice?
+    @State private var auditEntries: [RemoteAuditRecord] = []
+    @State private var auditLoadError: String?
     @State private var portText: String = ""
     @State private var portValidationError: String?
     @State private var showFreePortConfirmation = false
@@ -83,8 +92,7 @@ struct MobileSettingsView: View {
 
             SettingsSection(
                 "Approved Devices",
-                footer: "Revoking removes the device's access. It will need to request approval again to reconnect.",
-                showsDivider: false
+                footer: "Revoking removes the device's access. It will need to request approval again to reconnect."
             ) {
                 if devices.devices.isEmpty {
                     Text("No devices approved yet.")
@@ -98,9 +106,35 @@ struct MobileSettingsView: View {
                     }
                 }
             }
+
+            SettingsSection(
+                "Remote Audit Log",
+                footer: "Recent destructive remote source-control actions are stored at \(RemoteAuditLog.shared.fileURL.path).",
+                showsDivider: false
+            ) {
+                if let auditLoadError {
+                    Text(auditLoadError)
+                        .font(.system(size: SettingsMetrics.footnoteFontSize))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, SettingsMetrics.horizontalPadding)
+                        .padding(.vertical, SettingsMetrics.rowVerticalPadding)
+                } else if auditEntries.isEmpty {
+                    Text("No destructive remote actions recorded yet.")
+                        .font(.system(size: SettingsMetrics.labelFontSize))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, SettingsMetrics.horizontalPadding)
+                        .padding(.vertical, SettingsMetrics.rowVerticalPadding)
+                } else {
+                    ForEach(auditEntries) { entry in
+                        auditRow(entry)
+                    }
+                }
+            }
         }
         .onAppear {
             portText = String(service.port)
+            refreshAuditEntries()
             refreshPairingHosts()
             startPathMonitor()
         }
@@ -133,10 +167,21 @@ struct MobileSettingsView: View {
         ) { device in
             Button("Revoke", role: .destructive) {
                 devices.revoke(deviceID: device.id)
+                refreshAuditEntries()
             }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("The device will be disconnected immediately and must request approval again to reconnect.")
+        }
+    }
+
+    private func refreshAuditEntries() {
+        do {
+            auditEntries = try RemoteAuditLog.shared.recent(limit: 20)
+            auditLoadError = nil
+        } catch {
+            auditEntries = []
+            auditLoadError = error.localizedDescription
         }
     }
 
@@ -300,6 +345,66 @@ struct MobileSettingsView: View {
         }
         .padding(.horizontal, SettingsMetrics.horizontalPadding)
         .padding(.vertical, SettingsMetrics.rowVerticalPadding)
+    }
+
+    private func auditRow(_ entry: RemoteAuditRecord) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Text(entry.method.rawValue)
+                    .font(.system(size: SettingsMetrics.labelFontSize, weight: .medium, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 12)
+                Text(auditOutcomeText(entry.outcome))
+                    .font(.system(size: SettingsMetrics.footnoteFontSize, weight: .medium))
+                    .foregroundStyle(auditOutcomeColor(entry.outcome))
+            }
+
+            HStack(spacing: 8) {
+                Text(Self.auditDateFormatter.string(from: entry.timestamp))
+                Text(entry.deviceName ?? "Device \(entry.deviceID.uuidString.prefix(8))")
+                if let projectID = entry.projectID {
+                    Text("Project \(projectID.uuidString.prefix(8))")
+                }
+            }
+            .font(.system(size: SettingsMetrics.footnoteFontSize))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+
+            Text(entry.argsSummary)
+                .font(.system(size: SettingsMetrics.footnoteFontSize, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .textSelection(.enabled)
+
+            if let message = entry.errorMessage, !message.isEmpty {
+                Text(message)
+                    .font(.system(size: SettingsMetrics.footnoteFontSize))
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+            }
+        }
+        .padding(.horizontal, SettingsMetrics.horizontalPadding)
+        .padding(.vertical, SettingsMetrics.rowVerticalPadding)
+    }
+
+    private func auditOutcomeText(_ outcome: RemoteAuditRecord.Outcome) -> String {
+        switch outcome {
+        case .succeeded: "Succeeded"
+        case .denied: "Denied"
+        case .failed: "Failed"
+        }
+    }
+
+    private func auditOutcomeColor(_ outcome: RemoteAuditRecord.Outcome) -> Color {
+        switch outcome {
+        case .succeeded: .green
+        case .denied: .orange
+        case .failed: .red
+        }
     }
 
     private func lastSeenText(_ device: ApprovedDevice) -> String {

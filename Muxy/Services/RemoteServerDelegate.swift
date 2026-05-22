@@ -316,6 +316,29 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    func recordRemoteAuditEvent(_ event: RemoteAuditEvent) {
+        let deviceName = ApprovedDevicesStore.shared.devices.first(where: { $0.id == event.deviceID })?.name
+        let record = RemoteAuditRecord(
+            id: UUID(),
+            timestamp: event.timestamp,
+            clientID: event.clientID,
+            deviceID: event.deviceID,
+            deviceName: deviceName,
+            method: event.method,
+            projectID: event.projectID,
+            argsSummary: event.argsSummary,
+            outcome: RemoteAuditRecord.Outcome(event.outcome),
+            errorMessage: event.errorMessage,
+            nonce: event.nonce,
+            serverTimestamp: event.serverTimestamp
+        )
+        do {
+            try RemoteAuditLog.shared.append(record)
+        } catch {
+            logger.error("Failed to append remote audit record: \(error.localizedDescription)")
+        }
+    }
+
     func getDeviceTheme() -> DeviceThemeEventDTO? {
         ThemeService.shared.currentThemeColors()
     }
@@ -830,5 +853,18 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
               let worktree = worktreeStore.worktree(projectID: projectID, worktreeID: worktreeID)
         else { return nil }
         return worktree.path
+    }
+}
+
+private extension RemoteAuditRecord.Outcome {
+    init(_ outcome: RemoteAuditEvent.Outcome) {
+        switch outcome {
+        case .succeeded:
+            self = .succeeded
+        case .denied:
+            self = .denied
+        case .failed:
+            self = .failed
+        }
     }
 }

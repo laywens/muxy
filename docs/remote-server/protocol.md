@@ -199,6 +199,22 @@ returns `403 Permission denied` and does not dispatch the RPC. If the operator
 approves, destructive remote VCS calls are allowed for that WebSocket session
 until disconnect.
 
+## Remote audit log
+
+Muxy writes every destructive remote VCS attempt to an append-only JSON Lines
+file at `~/Library/Application Support/Muxy/audit/remote.log`. The log rotates
+at 10 MB and keeps five rotated files.
+
+Each record includes the timestamp, client ID, device ID, device name when
+known, method, project ID, argument summary, outcome, optional error message,
+and nullable `nonce` / `serverTimestamp` fields. Outcomes are `succeeded`,
+`denied`, or `failed`. Denials are recorded when local destructive-action
+confirmation is rejected before dispatch.
+
+The app shows recent records in Settings -> Mobile -> Remote Audit Log. The
+settings view is read-only; the JSON Lines file remains the durable record for
+external inspection.
+
 ## Response envelope
 
 Success:
