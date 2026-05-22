@@ -127,6 +127,7 @@ Success result:
     "deviceName": "Pixel 9",
     "acceptedVersions": [1, 2],
     "sessionToken": "64-hex-character-session-token",
+    "capabilities": ["project.read", "terminal.view", "terminal.input", "vcs.read", "vcs.write", "vcs.destructive"],
     "themeFg": 16777215,
     "themeBg": 197379,
     "themePalette": [0, 16711680, 65280]
@@ -134,9 +135,10 @@ Success result:
 }
 ```
 
-`sessionToken`, `themeFg`, `themeBg`, and `themePalette` are optional for
-legacy payload compatibility. `acceptedVersions` defaults to `[1, 2]` on this
-server when omitted.
+`sessionToken`, `capabilities`, `themeFg`, `themeBg`, and `themePalette` are
+optional for legacy payload compatibility. `acceptedVersions` defaults to `[1,
+2]` on this server when omitted. Missing `capabilities` defaults to all
+non-admin scopes.
 
 Legacy v1 token auth uses the previous request shape:
 
@@ -159,7 +161,7 @@ session token.
 
 ## `registerDevice`
 
-Registers a transient session for a device that has not persisted credentials. Returns a `deviceInfo` result with the same fields as `pairing`.
+Registers a transient session for a device that has not persisted credentials. Returns a `deviceInfo` result with the same fields as `pairing`, including the current session capabilities.
 
 ```json
 {
@@ -178,3 +180,10 @@ unauthorized. Re-pair from the client to recover.
 ## Revocation
 
 The Mac's **Settings → Mobile** lists approved devices. Revoking removes the device from `approved-devices.json` and terminates any active connection for that `deviceID`.
+
+The same settings view exposes per-device capability toggles. Scope changes
+apply when the device next authenticates; active WebSocket sessions keep the
+capabilities assigned at authentication time.
+
+The first destructive remote VCS action in a WebSocket session prompts for
+local confirmation on the Mac. A denial returns `403 Permission denied`.

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import MuxyShared
 import os
 
 private let logger = Logger(subsystem: "app.muxy", category: "ApprovedDevicesStore")
@@ -10,25 +11,64 @@ struct ApprovedDevice: Codable, Identifiable, Equatable {
     let tokenHash: String
     let approvedAt: Date
     var lastSeenAt: Date?
+    var scopes: Set<RemoteCapability>
+
+    init(
+        id: UUID,
+        name: String,
+        tokenHash: String,
+        approvedAt: Date,
+        lastSeenAt: Date?,
+        scopes: Set<RemoteCapability> = RemoteCapability.defaultDeviceScopes
+    ) {
+        self.id = id
+        self.name = name
+        self.tokenHash = tokenHash
+        self.approvedAt = approvedAt
+        self.lastSeenAt = lastSeenAt
+        self.scopes = scopes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case tokenHash
+        case approvedAt
+        case lastSeenAt
+        case scopes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        tokenHash = try container.decode(String.self, forKey: .tokenHash)
+        approvedAt = try container.decode(Date.self, forKey: .approvedAt)
+        lastSeenAt = try container.decodeIfPresent(Date.self, forKey: .lastSeenAt)
+        scopes = try container.decodeIfPresent(Set<RemoteCapability>.self, forKey: .scopes)
+            ?? RemoteCapability.defaultDeviceScopes
+    }
 }
 
 @MainActor
 @Observable
 final class ApprovedDevicesStore {
-    static let shared = ApprovedDevicesStore()
+    static let shared = ApprovedDevicesStore(store: defaultStore)
 
-    private static let store = CodableFileStore<[ApprovedDevice]>(
+    private static let defaultStore = CodableFileStore<[ApprovedDevice]>(
         fileURL: MuxyFileStorage.fileURL(filename: "approved-devices.json"),
         options: CodableFileStoreOptions(filePermissions: FilePermissions.privateFile)
     )
 
+    private let store: CodableFileStore<[ApprovedDevice]>
     private(set) var devices: [ApprovedDevice] = []
 
     var onRevoke: ((UUID) -> Void)?
 
-    private init() {
+    init(store: CodableFileStore<[ApprovedDevice]>) {
+        self.store = store
         do {
-            devices = try Self.store.load() ?? []
+            devices = try store.load() ?? []
         } catch {
             logger.error("Failed to load approved devices: \(error)")
         }
@@ -43,7 +83,8 @@ final class ApprovedDevicesStore {
                 name: name,
                 tokenHash: hash,
                 approvedAt: devices[index].approvedAt,
-                lastSeenAt: now
+                lastSeenAt: now,
+                scopes: devices[index].scopes
             )
         } else {
             devices.append(ApprovedDevice(
@@ -73,6 +114,22 @@ final class ApprovedDevicesStore {
     func rename(deviceID: UUID, to newName: String) {
         guard let index = devices.firstIndex(where: { $0.id == deviceID }) else { return }
         devices[index].name = newName
+        save()
+    }
+
+    func capabilities(for deviceID: UUID) -> Set<RemoteCapability> {
+        devices.first(where: { $0.id == deviceID })?.scopes ?? RemoteCapability.defaultDeviceScopes
+    }
+
+    func setScope(_ scope: RemoteCapability, enabled: Bool, for deviceID: UUID) {
+        guard scope != .admin,
+              let index = devices.firstIndex(where: { $0.id == deviceID })
+        else { return }
+        if enabled {
+            devices[index].scopes.insert(scope)
+        } else {
+            devices[index].scopes.remove(scope)
+        }
         save()
     }
 
@@ -135,7 +192,7 @@ final class ApprovedDevicesStore {
 
     private func save() {
         do {
-            try Self.store.save(devices)
+            try store.save(devices)
             SettingsJSONStore.syncUserSettingsFileWithCurrentSettings()
         } catch {
             logger.error("Failed to save approved devices: \(error)")

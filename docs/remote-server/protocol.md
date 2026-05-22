@@ -154,13 +154,50 @@ Successful authentication returns:
     "clientID": "62ea9d06-a1f4-4a11-9f39-33ee322f6573",
     "deviceName": "Pixel 9",
     "acceptedVersions": [1, 2],
-    "sessionToken": "64-hex-character-session-token"
+    "sessionToken": "64-hex-character-session-token",
+    "capabilities": ["project.read", "terminal.view", "terminal.input", "vcs.read", "vcs.write", "vcs.destructive"]
   }
 }
 ```
 
 `sessionToken` is scoped to the current WebSocket session. Clients must not use
 it as a long-lived device credential.
+
+## Capabilities
+
+Every approved device has a set of remote capability scopes. Existing approved
+devices and newly approved devices default to all non-admin scopes:
+
+- `project.read`
+- `terminal.view`
+- `terminal.input`
+- `vcs.read`
+- `vcs.write`
+- `vcs.destructive`
+
+`admin` is reserved and is not granted by default.
+
+The server checks capabilities after authentication and session-token validation,
+before dispatching any post-auth RPC. Missing capabilities return `401
+Authentication required`; clients should treat this as an authorization failure
+for that method unless the device has been reconfigured and reconnected.
+
+Capability mapping:
+
+| Capability | Methods and events |
+| --- | --- |
+| `project.read` | Project/worktree/workspace navigation, tab/layout mutations, project logos, notifications, subscribe/unsubscribe, `registerDevice`, `workspaceChanged`, `projectsChanged`, `notificationReceived`, `themeChanged` |
+| `terminal.view` | `getTerminalContent`, `terminalOutput`, `terminalSnapshot`, `paneOwnershipChanged` |
+| `terminal.input` | `takeOverPane`, `releasePane`, `terminalInput`, `terminalResize`, `terminalScroll` |
+| `vcs.read` | `getVCSStatus`, `vcsRefresh`, `vcsListBranches`, `vcsGetDiff` |
+| `vcs.write` | `vcsStageFiles`, `vcsUnstageFiles`, `vcsSwitchBranch`, `vcsCreateBranch`, `vcsCreatePR`, `vcsAddWorktree` |
+| `vcs.destructive` | `vcsCommit`, `vcsPush`, `vcsPull`, `vcsDiscardFiles`, `vcsMergePullRequest`, `vcsRemoveWorktree` |
+
+The first `vcs.destructive` call in a WebSocket session also requires local
+confirmation on the Mac. If the operator denies the confirmation, the server
+returns `403 Permission denied` and does not dispatch the RPC. If the operator
+approves, destructive remote VCS calls are allowed for that WebSocket session
+until disconnect.
 
 ## Response envelope
 

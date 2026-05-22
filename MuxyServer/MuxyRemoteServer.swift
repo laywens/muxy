@@ -63,6 +63,8 @@ public protocol MuxyRemoteServerDelegate: AnyObject {
     func authenticateDevice(deviceID: UUID, token: String, name: String) -> DeviceAuthDecision
     func authenticateDeviceChallenge(_ request: DeviceChallengeAuthRequest) -> DeviceAuthDecision
     func requestPairing(deviceID: UUID, token: String, name: String) async -> DeviceAuthDecision
+    func remoteCapabilities(for deviceID: UUID) -> Set<RemoteCapability>
+    func confirmRemoteDestructiveAction(_ request: RemoteDestructiveActionRequest) async -> Bool
     func getDeviceTheme() -> DeviceThemeEventDTO?
     func clientDisconnected(clientID: UUID)
     func getPaneOwner(paneID: UUID) -> PaneOwnerDTO?
@@ -93,6 +95,16 @@ public protocol MuxyRemoteServerDelegate: AnyObject {
     func markNotificationRead(_ notificationID: UUID)
 }
 
+public extension MuxyRemoteServerDelegate {
+    func remoteCapabilities(for _: UUID) -> Set<RemoteCapability> {
+        RemoteCapability.defaultDeviceScopes
+    }
+
+    func confirmRemoteDestructiveAction(_: RemoteDestructiveActionRequest) async -> Bool {
+        false
+    }
+}
+
 public final class MuxyRemoteServer: @unchecked Sendable {
     public static let defaultPort: UInt16 = 4865
     public static let bonjourServiceType: String = "_muxy._tcp"
@@ -103,6 +115,8 @@ public final class MuxyRemoteServer: @unchecked Sendable {
     private var connections: [UUID: ClientConnection] = [:]
     private var authenticatedClients: Set<UUID> = []
     private var deviceIDByClient: [UUID: UUID] = [:]
+    private var capabilitiesByClient: [UUID: Set<RemoteCapability>] = [:]
+    private var destructiveConfirmedClients: Set<UUID> = []
     private let authChallenges = RemoteAuthChallengeStore()
     private let sessionTokens = RemoteSessionTokens()
     private let queue = DispatchQueue(label: "app.muxy.remoteServer")
@@ -139,6 +153,8 @@ public final class MuxyRemoteServer: @unchecked Sendable {
             self.connections.removeAll()
             self.authenticatedClients.removeAll()
             self.deviceIDByClient.removeAll()
+            self.capabilitiesByClient.removeAll()
+            self.destructiveConfirmedClients.removeAll()
             self.sessionTokens.removeAll()
 
             guard let listener = self.listener else {
@@ -155,7 +171,9 @@ public final class MuxyRemoteServer: @unchecked Sendable {
         guard let data = try? MuxyCodec.encode(.event(event)) else { return }
         queue.async { [weak self] in
             guard let self else { return }
+            let requiredCapability = RemoteMethodAuthorization.requiredCapability(for: event.event)
             for clientID in self.authenticatedClients {
+                guard self.client(clientID, hasCapability: requiredCapability) else { continue }
                 self.connections[clientID]?.send(data)
             }
         }
@@ -165,7 +183,8 @@ public final class MuxyRemoteServer: @unchecked Sendable {
         guard let data = try? MuxyCodec.encode(.event(event)) else { return }
         queue.async { [weak self] in
             guard let self,
-                  self.authenticatedClients.contains(clientID)
+                  self.authenticatedClients.contains(clientID),
+                  self.client(clientID, hasCapability: RemoteMethodAuthorization.requiredCapability(for: event.event))
             else { return }
             self.connections[clientID]?.send(data)
         }
@@ -265,6 +284,8 @@ public final class MuxyRemoteServer: @unchecked Sendable {
             self?.connections.removeValue(forKey: id)
             self?.authenticatedClients.remove(id)
             self?.deviceIDByClient.removeValue(forKey: id)
+            self?.capabilitiesByClient.removeValue(forKey: id)
+            self?.destructiveConfirmedClients.remove(id)
             self?.sessionTokens.remove(clientID: id)
             logger.info("Client disconnected: \(id)")
         }
@@ -273,16 +294,30 @@ public final class MuxyRemoteServer: @unchecked Sendable {
         }
     }
 
-    private func markAuthenticated(_ id: UUID, deviceID: UUID) {
+    private func markAuthenticated(
+        _ id: UUID,
+        deviceID: UUID,
+        capabilities: Set<RemoteCapability>
+    ) {
         queue.async { [weak self] in
             self?.authenticatedClients.insert(id)
             self?.deviceIDByClient[id] = deviceID
+            self?.capabilitiesByClient[id] = capabilities
+            self?.destructiveConfirmedClients.remove(id)
         }
     }
 
-    func _testingMarkAuthenticated(_ id: UUID, sessionToken: String? = nil) {
+    func _testingMarkAuthenticated(
+        _ id: UUID,
+        deviceID: UUID = UUID(),
+        sessionToken: String? = nil,
+        capabilities: Set<RemoteCapability> = RemoteCapability.defaultDeviceScopes
+    ) {
         queue.sync {
             _ = authenticatedClients.insert(id)
+            deviceIDByClient[id] = deviceID
+            capabilitiesByClient[id] = capabilities
+            destructiveConfirmedClients.remove(id)
         }
         if let sessionToken {
             sessionTokens.set(sessionToken, for: id)
@@ -292,6 +327,43 @@ public final class MuxyRemoteServer: @unchecked Sendable {
     private func isAuthenticated(_ id: UUID, sessionToken: String?) -> Bool {
         queue.sync { authenticatedClients.contains(id) }
             && sessionTokens.validate(clientID: id, providedToken: sessionToken)
+    }
+
+    private func client(_ id: UUID, hasCapability capability: RemoteCapability) -> Bool {
+        queue.sync {
+            capabilitiesByClient[id, default: []].contains(capability)
+        }
+    }
+
+    private func capabilities(for clientID: UUID) -> Set<RemoteCapability> {
+        queue.sync {
+            capabilitiesByClient[clientID] ?? RemoteCapability.defaultDeviceScopes
+        }
+    }
+
+    private func destructiveActionRequest(
+        for clientID: UUID,
+        method: MuxyMethod
+    ) -> RemoteDestructiveActionRequest? {
+        queue.sync {
+            guard let deviceID = deviceIDByClient[clientID] else { return nil }
+            return RemoteDestructiveActionRequest(
+                clientID: clientID,
+                deviceID: deviceID,
+                method: method,
+                actionName: RemoteMethodAuthorization.actionName(for: method)
+            )
+        }
+    }
+
+    private func destructiveActionConfirmed(for clientID: UUID) -> Bool {
+        queue.sync { destructiveConfirmedClients.contains(clientID) }
+    }
+
+    private func markDestructiveActionConfirmed(for clientID: UUID) {
+        queue.async { [weak self] in
+            self?.destructiveConfirmedClients.insert(clientID)
+        }
     }
 
     func handleRequest(
@@ -423,6 +495,22 @@ public final class MuxyRemoteServer: @unchecked Sendable {
 
         guard isAuthenticated(clientID, sessionToken: request.sessionToken) else {
             return MuxyResponse(id: request.id, error: .unauthorized)
+        }
+        if let requiredCapability = RemoteMethodAuthorization.requiredCapability(for: request.method),
+           !client(clientID, hasCapability: requiredCapability)
+        {
+            return MuxyResponse(id: request.id, error: .unauthorized)
+        }
+        if RemoteMethodAuthorization.requiresDestructiveConfirmation(request.method),
+           !destructiveActionConfirmed(for: clientID)
+        {
+            guard let actionRequest = destructiveActionRequest(for: clientID, method: request.method) else {
+                return MuxyResponse(id: request.id, error: .unauthorized)
+            }
+            guard await delegate.confirmRemoteDestructiveAction(actionRequest) else {
+                return MuxyResponse(id: request.id, error: .permissionDenied)
+            }
+            markDestructiveActionConfirmed(for: clientID)
         }
 
         switch request.method {
@@ -787,7 +875,8 @@ public final class MuxyRemoteServer: @unchecked Sendable {
                 deviceName: params.deviceName,
                 themeFg: theme?.fg,
                 themeBg: theme?.bg,
-                themePalette: theme?.palette
+                themePalette: theme?.palette,
+                capabilities: RemoteCapability.ordered(capabilities(for: clientID))
             )
             return MuxyResponse(id: request.id, result: .deviceInfo(info))
 
@@ -828,7 +917,8 @@ public final class MuxyRemoteServer: @unchecked Sendable {
                 logger.error("Failed to issue session token: \(error)")
                 return MuxyResponse(id: requestID, error: .internalError)
             }
-            markAuthenticated(clientID, deviceID: deviceID)
+            let capabilities = delegate?.remoteCapabilities(for: deviceID) ?? RemoteCapability.defaultDeviceScopes
+            markAuthenticated(clientID, deviceID: deviceID, capabilities: capabilities)
             delegate?.registerDevice(clientID: clientID, name: deviceName)
             let theme = delegate?.getDeviceTheme()
             let result = PairingResultDTO(
@@ -837,7 +927,8 @@ public final class MuxyRemoteServer: @unchecked Sendable {
                 themeFg: theme?.fg,
                 themeBg: theme?.bg,
                 themePalette: theme?.palette,
-                sessionToken: sessionToken
+                sessionToken: sessionToken,
+                capabilities: RemoteCapability.ordered(capabilities)
             )
             return MuxyResponse(id: requestID, result: .pairing(result))
         case .unknown:

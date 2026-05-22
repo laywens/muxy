@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GhosttyKit
 import MuxyServer
@@ -293,6 +294,26 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         )
         guard approved else { return .denied }
         return .approved(deviceName: name)
+    }
+
+    func remoteCapabilities(for deviceID: UUID) -> Set<RemoteCapability> {
+        ApprovedDevicesStore.shared.capabilities(for: deviceID)
+    }
+
+    func confirmRemoteDestructiveAction(_ request: RemoteDestructiveActionRequest) async -> Bool {
+        let deviceName = ApprovedDevicesStore.shared.devices.first(where: { $0.id == request.deviceID })?.name
+            ?? "Remote device"
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Allow remote Git action?"
+        alert.informativeText = """
+        \(deviceName) wants to \(request
+            .actionName). Approval allows destructive remote source-control actions for this connection until it disconnects.
+        """
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Deny")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func getDeviceTheme() -> DeviceThemeEventDTO? {

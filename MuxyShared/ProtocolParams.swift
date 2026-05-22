@@ -201,6 +201,7 @@ public struct PairingResultDTO: Codable, Sendable {
     public let themePalette: [UInt32]?
     public let acceptedVersions: [Int]
     public let sessionToken: String?
+    public let capabilities: [RemoteCapability]
 
     private enum CodingKeys: String, CodingKey {
         case clientID
@@ -210,6 +211,7 @@ public struct PairingResultDTO: Codable, Sendable {
         case themePalette
         case acceptedVersions
         case sessionToken
+        case capabilities
     }
 
     public init(
@@ -219,7 +221,8 @@ public struct PairingResultDTO: Codable, Sendable {
         themeBg: UInt32? = nil,
         themePalette: [UInt32]? = nil,
         acceptedVersions: [Int] = MuxyProtocolVersion.accepted,
-        sessionToken: String? = nil
+        sessionToken: String? = nil,
+        capabilities: [RemoteCapability] = RemoteCapability.defaultDeviceCapabilities
     ) {
         self.clientID = clientID
         self.deviceName = deviceName
@@ -228,6 +231,7 @@ public struct PairingResultDTO: Codable, Sendable {
         self.themePalette = themePalette
         self.acceptedVersions = acceptedVersions
         self.sessionToken = sessionToken
+        self.capabilities = capabilities
     }
 
     public init(from decoder: Decoder) throws {
@@ -239,6 +243,8 @@ public struct PairingResultDTO: Codable, Sendable {
         themePalette = try container.decodeIfPresent([UInt32].self, forKey: .themePalette)
         acceptedVersions = try container.decodeIfPresent([Int].self, forKey: .acceptedVersions) ?? MuxyProtocolVersion.accepted
         sessionToken = try container.decodeIfPresent(String.self, forKey: .sessionToken)
+        capabilities = try container.decodeIfPresent([RemoteCapability].self, forKey: .capabilities)
+            ?? RemoteCapability.defaultDeviceCapabilities
     }
 }
 
@@ -249,6 +255,7 @@ public struct DeviceInfoDTO: Codable, Sendable {
     public let themeBg: UInt32?
     public let themePalette: [UInt32]?
     public let acceptedVersions: [Int]
+    public let capabilities: [RemoteCapability]
 
     private enum CodingKeys: String, CodingKey {
         case clientID
@@ -257,6 +264,7 @@ public struct DeviceInfoDTO: Codable, Sendable {
         case themeBg
         case themePalette
         case acceptedVersions
+        case capabilities
     }
 
     public init(
@@ -265,7 +273,8 @@ public struct DeviceInfoDTO: Codable, Sendable {
         themeFg: UInt32? = nil,
         themeBg: UInt32? = nil,
         themePalette: [UInt32]? = nil,
-        acceptedVersions: [Int] = MuxyProtocolVersion.accepted
+        acceptedVersions: [Int] = MuxyProtocolVersion.accepted,
+        capabilities: [RemoteCapability] = RemoteCapability.defaultDeviceCapabilities
     ) {
         self.clientID = clientID
         self.deviceName = deviceName
@@ -273,6 +282,7 @@ public struct DeviceInfoDTO: Codable, Sendable {
         self.themeBg = themeBg
         self.themePalette = themePalette
         self.acceptedVersions = acceptedVersions
+        self.capabilities = capabilities
     }
 
     public init(from decoder: Decoder) throws {
@@ -283,6 +293,8 @@ public struct DeviceInfoDTO: Codable, Sendable {
         themeBg = try container.decodeIfPresent(UInt32.self, forKey: .themeBg)
         themePalette = try container.decodeIfPresent([UInt32].self, forKey: .themePalette)
         acceptedVersions = try container.decodeIfPresent([Int].self, forKey: .acceptedVersions) ?? MuxyProtocolVersion.accepted
+        capabilities = try container.decodeIfPresent([RemoteCapability].self, forKey: .capabilities)
+            ?? RemoteCapability.defaultDeviceCapabilities
     }
 }
 

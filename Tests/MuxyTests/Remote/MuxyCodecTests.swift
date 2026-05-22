@@ -88,6 +88,30 @@ struct MuxyCodecTests {
         #expect(result.sessionToken == nil)
     }
 
+    @Test("pairing result defaults capabilities for legacy payloads")
+    func pairingResultDefaultsCapabilities() throws {
+        let json = #"{"clientID":"00000000-0000-0000-0000-000000000001","deviceName":"iPhone"}"#
+
+        let result = try JSONDecoder().decode(PairingResultDTO.self, from: Data(json.utf8))
+
+        #expect(Set(result.capabilities) == RemoteCapability.defaultDeviceScopes)
+        #expect(!result.capabilities.contains(.admin))
+    }
+
+    @Test("pairing result capabilities round trip")
+    func pairingResultCapabilitiesRoundTrip() throws {
+        let result = PairingResultDTO(
+            clientID: UUID(),
+            deviceName: "iPhone",
+            capabilities: [.projectRead, .terminalView, .vcsRead]
+        )
+
+        let data = try JSONEncoder().encode(result)
+        let decoded = try JSONDecoder().decode(PairingResultDTO.self, from: data)
+
+        #expect(decoded.capabilities == [.projectRead, .terminalView, .vcsRead])
+    }
+
     @Test("device info defaults acceptedVersions for legacy payloads")
     func deviceInfoDefaultsAcceptedVersions() throws {
         let json = #"{"clientID":"00000000-0000-0000-0000-000000000001","deviceName":"iPhone"}"#
@@ -95,6 +119,15 @@ struct MuxyCodecTests {
         let result = try JSONDecoder().decode(DeviceInfoDTO.self, from: Data(json.utf8))
 
         #expect(result.acceptedVersions == [1, 2])
+    }
+
+    @Test("device info defaults capabilities for legacy payloads")
+    func deviceInfoDefaultsCapabilities() throws {
+        let json = #"{"clientID":"00000000-0000-0000-0000-000000000001","deviceName":"iPhone"}"#
+
+        let result = try JSONDecoder().decode(DeviceInfoDTO.self, from: Data(json.utf8))
+
+        #expect(Set(result.capabilities) == RemoteCapability.defaultDeviceScopes)
     }
 
     @Test("request round-trip preserves id, method and params")

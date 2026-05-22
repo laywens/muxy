@@ -61,6 +61,7 @@ public struct MuxyError: Codable, Sendable {
     public static let invalidParams = MuxyError(code: 400, message: "Invalid parameters")
     public static let internalError = MuxyError(code: 500, message: "Internal error")
     public static let unauthorized = MuxyError(code: 401, message: "Authentication required")
+    public static let permissionDenied = MuxyError(code: 403, message: "Permission denied")
     public static let pairingDenied = MuxyError(code: 403, message: "Pairing denied")
     public static let pairingTimeout = MuxyError(code: 408, message: "Pairing request timed out")
 }

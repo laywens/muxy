@@ -38,6 +38,9 @@ private final class MockDelegate: MuxyRemoteServerDelegate {
     var stubCreatePRResult = VCSCreatePRResultDTO(url: "https://example.com", number: 42)
     var stubAddedWorktree = WorktreeDTO(id: UUID(), name: "wt", path: "/tmp/wt", isPrimary: false, createdAt: Date())
     var challengeDecision: DeviceAuthDecision = .approved(deviceName: "iPhone")
+    var capabilitiesByDevice: [UUID: Set<RemoteCapability>] = [:]
+    var confirmDestructiveActionResult = true
+    var confirmDestructiveActionCalls: [RemoteDestructiveActionRequest] = []
 
     func listProjects() -> [ProjectDTO] {
         listProjectsCalled += 1
@@ -88,6 +91,15 @@ private final class MockDelegate: MuxyRemoteServerDelegate {
 
     func requestPairing(deviceID _: UUID, token _: String, name: String) async -> DeviceAuthDecision {
         .approved(deviceName: name)
+    }
+
+    func remoteCapabilities(for deviceID: UUID) -> Set<RemoteCapability> {
+        capabilitiesByDevice[deviceID] ?? RemoteCapability.defaultDeviceScopes
+    }
+
+    func confirmRemoteDestructiveAction(_ request: RemoteDestructiveActionRequest) async -> Bool {
+        confirmDestructiveActionCalls.append(request)
+        return confirmDestructiveActionResult
     }
 
     func getDeviceTheme() -> DeviceThemeEventDTO? { nil }
@@ -200,9 +212,18 @@ struct MuxyRemoteServerRoutingTests {
         return (server, delegate)
     }
 
-    private func authedClient(on server: MuxyRemoteServer) -> UUID {
+    private func authedClient(
+        on server: MuxyRemoteServer,
+        deviceID: UUID = UUID(),
+        capabilities: Set<RemoteCapability> = RemoteCapability.defaultDeviceScopes
+    ) -> UUID {
         let id = UUID()
-        server._testingMarkAuthenticated(id, sessionToken: Self.testSessionToken)
+        server._testingMarkAuthenticated(
+            id,
+            deviceID: deviceID,
+            sessionToken: Self.testSessionToken,
+            capabilities: capabilities
+        )
         return id
     }
 
@@ -564,6 +585,115 @@ struct MuxyRemoteServerRoutingTests {
             Issue.record("expected authorized projects")
             return
         }
+    }
+
+    @Test("authenticated request without required capability returns unauthorized before routing")
+    func requestWithoutCapabilityIsUnauthorized() async {
+        let (server, delegate) = makeServer()
+        let clientID = authedClient(on: server, capabilities: [.terminalView])
+        let paneID = UUID()
+
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "cap-denied",
+                method: .terminalInput,
+                params: .terminalInput(TerminalInputParams(paneID: paneID, bytes: Data("hello".utf8))),
+                sessionToken: Self.testSessionToken
+            ),
+            clientID: clientID
+        )
+
+        #expect(response.error?.code == 401)
+        #expect(response.result == nil)
+        #expect(delegate.terminalInputCalls.isEmpty)
+    }
+
+    @Test("destructive VCS calls require one local confirmation per connection")
+    func destructiveVCSRequiresConfirmationOncePerConnection() async {
+        let (server, delegate) = makeServer()
+        let clientID = authedClient(on: server, capabilities: [.vcsDestructive])
+        let pushProjectID = UUID()
+        let pullProjectID = UUID()
+
+        let pushResponse = await server.processRequest(
+            MuxyRequest(
+                id: "destructive-push",
+                method: .vcsPush,
+                params: .vcsPush(VCSPushParams(projectID: pushProjectID)),
+                sessionToken: Self.testSessionToken
+            ),
+            clientID: clientID
+        )
+        let pullResponse = await server.processRequest(
+            MuxyRequest(
+                id: "destructive-pull",
+                method: .vcsPull,
+                params: .vcsPull(VCSPullParams(projectID: pullProjectID)),
+                sessionToken: Self.testSessionToken
+            ),
+            clientID: clientID
+        )
+
+        #expect(delegate.confirmDestructiveActionCalls.map(\.method) == [.vcsPush])
+        #expect(delegate.vcsPushCalls == [pushProjectID])
+        #expect(delegate.vcsPullCalls == [pullProjectID])
+        #expect(pushResponse.error == nil)
+        #expect(pullResponse.error == nil)
+    }
+
+    @Test("denied destructive VCS confirmation returns permission denied before routing")
+    func deniedDestructiveVCSConfirmationBlocksRouting() async {
+        let (server, delegate) = makeServer()
+        delegate.confirmDestructiveActionResult = false
+        let projectID = UUID()
+
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "destructive-denied",
+                method: .vcsDiscardFiles,
+                params: .vcsDiscardFiles(VCSDiscardFilesParams(
+                    projectID: projectID,
+                    paths: ["a.swift"],
+                    untrackedPaths: []
+                )),
+                sessionToken: Self.testSessionToken
+            ),
+            clientID: authedClient(on: server, capabilities: [.vcsDestructive])
+        )
+
+        #expect(response.error?.code == 403)
+        #expect(response.result == nil)
+        #expect(delegate.confirmDestructiveActionCalls.map(\.method) == [.vcsDiscardFiles])
+        #expect(delegate.vcsDiscardFilesCalls.isEmpty)
+    }
+
+    @Test("auth result advertises delegate capabilities")
+    func authResultAdvertisesDelegateCapabilities() async {
+        let (server, delegate) = makeServer()
+        let clientID = UUID()
+        let deviceID = UUID()
+        delegate.capabilitiesByDevice[deviceID] = [.projectRead, .terminalView]
+
+        let response = await server.processRequest(
+            MuxyRequest(
+                id: "auth-capabilities",
+                method: .authenticateDevice,
+                params: .authenticateDevice(AuthenticateDeviceParams(
+                    deviceID: deviceID,
+                    deviceName: "iPhone",
+                    token: "token"
+                ))
+            ),
+            clientID: clientID,
+            protocolVersion: 1
+        )
+
+        guard case let .pairing(result) = response.result else {
+            Issue.record("expected pairing result")
+            return
+        }
+        #expect(Set(result.capabilities) == [.projectRead, .terminalView])
+        #expect(!result.capabilities.contains(.admin))
     }
 
     @Test("getWorkspace returns notFound when delegate has no workspace")

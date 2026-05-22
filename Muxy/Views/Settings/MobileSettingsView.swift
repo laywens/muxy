@@ -1,4 +1,5 @@
 import AppKit
+import MuxyShared
 import Network
 import SwiftUI
 
@@ -264,21 +265,38 @@ struct MobileSettingsView: View {
     }
 
     private func deviceRow(_ device: ApprovedDevice) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(device.name)
-                    .font(.system(size: SettingsMetrics.labelFontSize))
-                Text(lastSeenText(device))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(device.name)
+                        .font(.system(size: SettingsMetrics.labelFontSize))
+                    Text(lastSeenText(device))
+                        .font(.system(size: SettingsMetrics.footnoteFontSize))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Revoke", role: .destructive) {
+                    deviceToRevoke = device
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: SettingsMetrics.footnoteFontSize))
+                .foregroundStyle(.red)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(RemoteCapability.userEditableDeviceCapabilities, id: \.self) { capability in
+                    Toggle(
+                        capability.displayName,
+                        isOn: Binding(
+                            get: { device.scopes.contains(capability) },
+                            set: { devices.setScope(capability, enabled: $0, for: device.id) }
+                        )
+                    )
+                    .toggleStyle(.checkbox)
                     .font(.system(size: SettingsMetrics.footnoteFontSize))
                     .foregroundStyle(SettingsStyle.mutedForeground)
+                }
             }
-            Spacer()
-            Button("Revoke", role: .destructive) {
-                deviceToRevoke = device
-            }
-            .buttonStyle(.borderless)
-            .font(.system(size: SettingsMetrics.footnoteFontSize))
-            .foregroundStyle(SettingsStyle.destructive)
         }
         .padding(.horizontal, SettingsMetrics.horizontalPadding)
         .padding(.vertical, SettingsMetrics.rowVerticalPadding)
