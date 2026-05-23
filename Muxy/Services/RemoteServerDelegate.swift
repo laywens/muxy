@@ -262,7 +262,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
     }
 
     func authenticateDeviceChallenge(_ request: DeviceChallengeAuthRequest) -> DeviceAuthDecision {
-        guard let device = ApprovedDevicesStore.shared.devices.first(where: { $0.id == request.deviceID }) else {
+        guard let device = ApprovedDevicesStore.shared.authenticationDevice(deviceID: request.deviceID) else {
             return .unknown
         }
         let expected = ApprovedDevicesStore.challengeResponse(

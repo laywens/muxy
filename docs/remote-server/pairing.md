@@ -181,6 +181,8 @@ unauthorized. Re-pair from the client to recover.
 
 The Mac's **Settings → Mobile** lists approved devices. Revoking removes the device from `approved-devices.json` and terminates any active connection for that `deviceID`.
 
+Approved devices are disabled after 30 days without activity. The disabled device remains visible in Settings for review or revocation, but it cannot authenticate. Revoke and pair again to restore access.
+
 The same settings view exposes per-device capability toggles. Scope changes
 apply when the device next authenticates; active WebSocket sessions keep the
 capabilities assigned at authentication time.

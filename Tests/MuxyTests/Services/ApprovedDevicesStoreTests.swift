@@ -64,6 +64,71 @@ struct ApprovedDevicesStoreTests {
         #expect(store.validate(deviceID: deviceID, token: "second") != nil)
     }
 
+    @MainActor
+    @Test("loading disables devices inactive for thirty days")
+    func loadingDisablesDevicesInactiveForThirtyDays() throws {
+        let harness = try ApprovedDeviceStoreHarness()
+        let deviceID = UUID()
+        let now = Date(timeIntervalSince1970: 60 * 60 * 24 * 31)
+        try harness.writeDevices([
+            ApprovedDevice(
+                id: deviceID,
+                name: "iPhone",
+                tokenHash: ApprovedDevicesStore.hash("token"),
+                approvedAt: Date(timeIntervalSince1970: 0),
+                lastSeenAt: Date(timeIntervalSince1970: 0)
+            )
+        ])
+
+        let store = harness.makeStore(now: { now })
+
+        #expect(store.devices.first?.disabledAt == now)
+        #expect(store.validate(deviceID: deviceID, token: "token") == nil)
+    }
+
+    @MainActor
+    @Test("recently seen devices remain enabled")
+    func recentlySeenDevicesRemainEnabled() throws {
+        let harness = try ApprovedDeviceStoreHarness()
+        let deviceID = UUID()
+        let now = Date(timeIntervalSince1970: 60 * 60 * 24 * 31)
+        try harness.writeDevices([
+            ApprovedDevice(
+                id: deviceID,
+                name: "iPhone",
+                tokenHash: ApprovedDevicesStore.hash("token"),
+                approvedAt: Date(timeIntervalSince1970: 0),
+                lastSeenAt: Date(timeIntervalSince1970: 60 * 60 * 24 * 2)
+            )
+        ])
+
+        let store = harness.makeStore(now: { now })
+
+        #expect(store.devices.first?.disabledAt == nil)
+        #expect(store.validate(deviceID: deviceID, token: "token") != nil)
+    }
+
+    @MainActor
+    @Test("authentication lookup rejects disabled devices")
+    func authenticationLookupRejectsDisabledDevices() throws {
+        let harness = try ApprovedDeviceStoreHarness()
+        let deviceID = UUID()
+        try harness.writeDevices([
+            ApprovedDevice(
+                id: deviceID,
+                name: "iPhone",
+                tokenHash: ApprovedDevicesStore.hash("token"),
+                approvedAt: Date(timeIntervalSince1970: 0),
+                lastSeenAt: Date(timeIntervalSince1970: 0),
+                disabledAt: Date(timeIntervalSince1970: 1)
+            )
+        ])
+
+        let store = harness.makeStore()
+
+        #expect(store.authenticationDevice(deviceID: deviceID) == nil)
+    }
+
     private struct LegacyApprovedDevice: Encodable {
         let id: UUID
         let name: String
@@ -82,8 +147,12 @@ struct ApprovedDevicesStoreTests {
         }
 
         @MainActor
-        func makeStore() -> ApprovedDevicesStore {
-            ApprovedDevicesStore(store: CodableFileStore<[ApprovedDevice]>(fileURL: fileURL))
+        func makeStore(now: @escaping () -> Date = Date.init) -> ApprovedDevicesStore {
+            ApprovedDevicesStore(store: CodableFileStore<[ApprovedDevice]>(fileURL: fileURL), now: now)
+        }
+
+        func writeDevices(_ devices: [ApprovedDevice]) throws {
+            try CodableFileStore<[ApprovedDevice]>(fileURL: fileURL).save(devices)
         }
     }
 }

@@ -11,6 +11,7 @@ struct ApprovedDevice: Codable, Identifiable, Equatable {
     let tokenHash: String
     let approvedAt: Date
     var lastSeenAt: Date?
+    var disabledAt: Date?
     var scopes: Set<RemoteCapability>
 
     init(
@@ -19,6 +20,7 @@ struct ApprovedDevice: Codable, Identifiable, Equatable {
         tokenHash: String,
         approvedAt: Date,
         lastSeenAt: Date?,
+        disabledAt: Date? = nil,
         scopes: Set<RemoteCapability> = RemoteCapability.defaultDeviceScopes
     ) {
         self.id = id
@@ -26,6 +28,7 @@ struct ApprovedDevice: Codable, Identifiable, Equatable {
         self.tokenHash = tokenHash
         self.approvedAt = approvedAt
         self.lastSeenAt = lastSeenAt
+        self.disabledAt = disabledAt
         self.scopes = scopes
     }
 
@@ -35,6 +38,7 @@ struct ApprovedDevice: Codable, Identifiable, Equatable {
         case tokenHash
         case approvedAt
         case lastSeenAt
+        case disabledAt
         case scopes
     }
 
@@ -45,6 +49,7 @@ struct ApprovedDevice: Codable, Identifiable, Equatable {
         tokenHash = try container.decode(String.self, forKey: .tokenHash)
         approvedAt = try container.decode(Date.self, forKey: .approvedAt)
         lastSeenAt = try container.decodeIfPresent(Date.self, forKey: .lastSeenAt)
+        disabledAt = try container.decodeIfPresent(Date.self, forKey: .disabledAt)
         scopes = try container.decodeIfPresent(Set<RemoteCapability>.self, forKey: .scopes)
             ?? RemoteCapability.defaultDeviceScopes
     }
@@ -54,6 +59,7 @@ struct ApprovedDevice: Codable, Identifiable, Equatable {
 @Observable
 final class ApprovedDevicesStore {
     static let shared = ApprovedDevicesStore(store: defaultStore)
+    static let inactivityDisableInterval: TimeInterval = 60 * 60 * 24 * 30
 
     private static let defaultStore = CodableFileStore<[ApprovedDevice]>(
         fileURL: MuxyFileStorage.fileURL(filename: "approved-devices.json"),
@@ -61,14 +67,17 @@ final class ApprovedDevicesStore {
     )
 
     private let store: CodableFileStore<[ApprovedDevice]>
+    private let now: () -> Date
     private(set) var devices: [ApprovedDevice] = []
 
     var onRevoke: ((UUID) -> Void)?
 
-    init(store: CodableFileStore<[ApprovedDevice]>) {
+    init(store: CodableFileStore<[ApprovedDevice]>, now: @escaping () -> Date = Date.init) {
         self.store = store
+        self.now = now
         do {
             devices = try store.load() ?? []
+            disableInactiveDevices(referenceDate: now())
         } catch {
             logger.error("Failed to load approved devices: \(error)")
         }
@@ -76,7 +85,7 @@ final class ApprovedDevicesStore {
 
     func approve(deviceID: UUID, name: String, token: String) {
         let hash = Self.hash(token)
-        let now = Date()
+        let now = now()
         if let index = devices.firstIndex(where: { $0.id == deviceID }) {
             devices[index] = ApprovedDevice(
                 id: deviceID,
@@ -84,6 +93,7 @@ final class ApprovedDevicesStore {
                 tokenHash: hash,
                 approvedAt: devices[index].approvedAt,
                 lastSeenAt: now,
+                disabledAt: nil,
                 scopes: devices[index].scopes
             )
         } else {
@@ -99,15 +109,27 @@ final class ApprovedDevicesStore {
     }
 
     func validate(deviceID: UUID, token: String) -> ApprovedDevice? {
-        guard let device = devices.first(where: { $0.id == deviceID }) else { return nil }
+        guard let device = authenticationDevice(deviceID: deviceID) else { return nil }
         let provided = Self.hash(token)
         guard Self.constantTimeEquals(device.tokenHash, provided) else { return nil }
         return device
     }
 
+    func authenticationDevice(deviceID: UUID) -> ApprovedDevice? {
+        disableInactiveDevices(referenceDate: now())
+        guard let device = devices.first(where: { $0.id == deviceID }) else { return nil }
+        guard device.disabledAt == nil else { return nil }
+        return device
+    }
+
+    func refreshInactiveDevices() {
+        disableInactiveDevices(referenceDate: now())
+    }
+
     func touch(deviceID: UUID) {
         guard let index = devices.firstIndex(where: { $0.id == deviceID }) else { return }
-        devices[index].lastSeenAt = Date()
+        guard devices[index].disabledAt == nil else { return }
+        devices[index].lastSeenAt = now()
         save()
     }
 
@@ -142,6 +164,17 @@ final class ApprovedDevicesStore {
     func replaceDevices(_ newDevices: [ApprovedDevice]) {
         devices = newDevices
         save()
+    }
+
+    private func disableInactiveDevices(referenceDate: Date) {
+        var didChange = false
+        for index in devices.indices where devices[index].disabledAt == nil {
+            let lastActivity = devices[index].lastSeenAt ?? devices[index].approvedAt
+            guard referenceDate.timeIntervalSince(lastActivity) >= Self.inactivityDisableInterval else { continue }
+            devices[index].disabledAt = referenceDate
+            didChange = true
+        }
+        if didChange { save() }
     }
 
     nonisolated static func hash(_ token: String) -> String {

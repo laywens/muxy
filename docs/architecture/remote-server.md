@@ -52,7 +52,7 @@ sequenceDiagram
   end
 ```
 
-After success, the client is added to an `authenticatedClients` set on `MuxyRemoteServer`; broadcasts only go to clients in that set. Until the handshake succeeds the server rejects every other RPC with `401`. The `Mobile` tab in Settings lists approved devices with a Revoke action; revoke removes the device from `approved-devices.json` and terminates active connections via `MuxyRemoteServer.disconnect(deviceID:)`.
+After success, the client is added to an `authenticatedClients` set on `MuxyRemoteServer`; broadcasts only go to clients in that set. Until the handshake succeeds the server rejects every other RPC with `401`. The `Mobile` tab in Settings lists approved devices with inactivity-disabled state and a Revoke action; revoke removes the device from `approved-devices.json` and terminates active connections via `MuxyRemoteServer.disconnect(deviceID:)`.
 
 A token mismatch is treated the same as unknown (returns `401`) so a stolen but outdated credential can't resume authentication.
 

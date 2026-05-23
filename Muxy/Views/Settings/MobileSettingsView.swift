@@ -134,6 +134,7 @@ struct MobileSettingsView: View {
         }
         .onAppear {
             portText = String(service.port)
+            devices.refreshInactiveDevices()
             refreshAuditEntries()
             refreshPairingHosts()
             startPathMonitor()
@@ -313,8 +314,15 @@ struct MobileSettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(device.name)
-                        .font(.system(size: SettingsMetrics.labelFontSize))
+                    HStack(spacing: 8) {
+                        Text(device.name)
+                            .font(.system(size: SettingsMetrics.labelFontSize))
+                        if device.disabledAt != nil {
+                            Text("Disabled")
+                                .font(.system(size: SettingsMetrics.footnoteFontSize, weight: .medium))
+                                .foregroundStyle(.orange)
+                        }
+                    }
                     Text(lastSeenText(device))
                         .font(.system(size: SettingsMetrics.footnoteFontSize))
                         .foregroundStyle(.secondary)
@@ -340,6 +348,7 @@ struct MobileSettingsView: View {
                     .toggleStyle(.checkbox)
                     .font(.system(size: SettingsMetrics.footnoteFontSize))
                     .foregroundStyle(SettingsStyle.mutedForeground)
+                    .disabled(device.disabledAt != nil)
                 }
             }
         }
@@ -410,6 +419,9 @@ struct MobileSettingsView: View {
     private func lastSeenText(_ device: ApprovedDevice) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
+        if let disabledAt = device.disabledAt {
+            return "Disabled \(formatter.localizedString(for: disabledAt, relativeTo: Date())) after 30 days inactive"
+        }
         if let seen = device.lastSeenAt {
             return "Last seen \(formatter.localizedString(for: seen, relativeTo: Date()))"
         }
