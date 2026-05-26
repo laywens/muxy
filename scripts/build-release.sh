@@ -107,10 +107,12 @@ TRIPLE="${ARCH}-apple-macosx14.0"
 BUILD_NUMBER=$(git -C "$PROJECT_ROOT" rev-list --count HEAD)
 APP_BUNDLE="$BUILD_DIR/Muxy.app"
 DSYM_BUNDLE="$BUILD_DIR/Muxy-${VERSION}-${ARCH}.app.dSYM"
+DMG_SOURCE_DIR="$BUILD_DIR/dmg-root"
 DMG_NAME="Muxy-${VERSION}-${ARCH}.dmg"
 
 rm -rf "$APP_BUNDLE"
 rm -rf "$DSYM_BUNDLE"
+rm -rf "$DMG_SOURCE_DIR"
 
 echo "==> Building for $ARCH ($TRIPLE)"
 cd "$PROJECT_ROOT"
@@ -213,7 +215,10 @@ fi
 
 cd "$BUILD_DIR"
 rm -f "$BUILD_DIR/$DMG_NAME"
-create-dmg "$APP_BUNDLE" "$BUILD_DIR"
+mkdir -p "$DMG_SOURCE_DIR"
+cp -R "$APP_BUNDLE" "$DMG_SOURCE_DIR/Muxy.app"
+create-dmg --volname "Muxy" --app-drop-link 425 120 "$BUILD_DIR/$DMG_NAME" "$DMG_SOURCE_DIR"
+rm -rf "$DMG_SOURCE_DIR"
 
 GENERATED_DMG=$(find "$BUILD_DIR" -maxdepth 1 -name "Muxy*.dmg" -not -name "$DMG_NAME" | head -1)
 if [[ -n "$GENERATED_DMG" ]]; then
